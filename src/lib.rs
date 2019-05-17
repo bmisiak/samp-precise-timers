@@ -95,29 +95,26 @@ impl PreciseTimers {
         let interval = Duration::from_millis(interval as u64);
 
         /* Get the arguments to pass to the callback */
-        let mut argument_types_str_iterator = argument_type_lettters.iter();
         let mut passed_arguments: Vec<PassedArgument> = Vec::with_capacity(argument_type_lettters.len());
 
-        while let Some(arg) = args.next::<Ref<i32>>() {
-            match argument_types_str_iterator.next() { //if samp::args::Args implemented Iterator we could .zip args with letters
-                Some(b'd') | Some(b'i') => {
-                    passed_arguments.push(PassedArgument::Int(arg.as_cell()));
-                }
-                Some(b'f') => {
-                    passed_arguments.push(PassedArgument::Float(arg.as_cell() as f32));
-                }
-                Some(b's') => {
-                    /*let buffer = UnsizedBuffer {
-                        inner: arg
-                    };*/
-                    let amx_str = samp::cell::AmxString::from_raw(amx,arg.as_cell())?;
-                    passed_arguments.push(PassedArgument::Str(amx_str.to_bytes()));
-                }
-                None => {
-                    error!("Not enough argument types provided");
-                }
+        for type_letter in argument_type_lettters {
+            match type_letter {
+                b'd' | b'i' => {
+                    let argument: Ref<i32> = args.next().ok_or(AmxError::Params)?;
+                    passed_arguments.push( PassedArgument::Int( *argument ) );
+                },
+                b'f' => {
+                    let argument: Ref<f32> = args.next().ok_or(AmxError::Params)?;
+                    passed_arguments.push( PassedArgument::Float( f32::from_raw(amx,argument.address())? ) );
+                },
+                b's' => {
+                    let argument: Ref<i32> = args.next().ok_or(AmxError::Params)?;
+                    let amx_str = samp::cell::AmxString::from_raw(amx,argument.address())?;
+                    passed_arguments.push( PassedArgument::Str(amx_str.to_bytes()) );
+                },
                 _ => {
-                    error!("Unsupported argument type provided");
+                    error!("Unsupported argument type: {}",type_letter);
+                    return Err(AmxError::Params);
                 }
             }
         }
