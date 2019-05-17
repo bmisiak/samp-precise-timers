@@ -63,8 +63,7 @@ impl Timer {
 /// The plugin and its data: a list of scheduled timers
 struct PreciseTimers {
     timers: Vec<Timer>,
-    timers_added_from_pawn_callbacks_during_iteration: Vec<Timer>,
-    processing_timers: bool
+    timers_added_from_pawn_callbacks_during_iteration: Vec<Timer>
 }
 
 impl PreciseTimers {
@@ -186,7 +185,6 @@ impl SampPlugin for PreciseTimers {
         // That's why the DeletePreciseTimer() schedules timers for deletion instead of doing it right away, and SetPreciseTimer() adds them to a separate list.
         self.timers.append(&mut self.timers_added_from_pawn_callbacks_during_iteration);
 
-        self.processing_timers = true;
         self.timers.drain_filter( |timer: &mut Timer| {
             if timer.next_trigger >= now {
                 if timer.scheduled_for_removal {
@@ -216,7 +214,6 @@ impl SampPlugin for PreciseTimers {
                 return false;
             }
         });
-        self.processing_timers = false;
     }
 }
 
@@ -241,8 +238,7 @@ initialize_plugin!(
         
         return PreciseTimers {
             timers: Vec::with_capacity(1000),
-            timers_added_from_pawn_callbacks_during_iteration: Vec::with_capacity(10),
-            processing_timers: false
+            timers_added_from_pawn_callbacks_during_iteration: Vec::with_capacity(10)
         };
     }
 );
