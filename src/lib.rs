@@ -1,4 +1,4 @@
-#![feature(drain_filter)]
+#![feature(drain_filter, try_trait)]
 
 use samp::amx::Amx;
 use samp::cell::{AmxCell, AmxString, Ref};//, UnsizedBuffer, Buffer};
@@ -72,7 +72,7 @@ impl PreciseTimers {
     ///  ```
     /// native SetPreciseTimer(const callback_name[], const interval, const bool:repeat, const types_of_arguments[]="", ...);
     /// ```
-    #[native(raw, name="SetPreciseTimer")]
+    #[native(raw,name="SetPreciseTimer")]
     pub fn create(&mut self, amx: &Amx, mut args: samp::args::Args) -> AmxResult<i32> {
         
         /* Get the basic, mandatory timer parameters */
@@ -109,7 +109,7 @@ impl PreciseTimers {
                 },
                 b's' => {
                     let argument: Ref<i32> = args.next().ok_or(AmxError::Params)?;
-                    let amx_str = samp::cell::AmxString::from_raw(amx,argument.address())?;
+                    let amx_str = AmxString::from_raw(amx,argument.address())?;
                     passed_arguments.push( PassedArgument::Str(amx_str.to_bytes()) );
                 },
                 _ => {
@@ -223,8 +223,7 @@ initialize_plugin!(
         samp::plugin::enable_process_tick();
 
         // get the default samp logger (uses samp logprintf).
-        let samp_logger = samp::plugin::logger()
-            .level(log::LevelFilter::Info); // logging info, warn and error messages
+        let samp_logger = samp::plugin::logger().level(log::LevelFilter::Info); // logging info, warn and error messages
 
         let _ = fern::Dispatch::new()
             .format(|callback, message, record| {
