@@ -3,6 +3,8 @@ name = "nfg-timer"
 version = "1.0.0"
 authors = ["Brian Misiak <bm@net4game.com>"]
 edition = "2018"
+license = "LGPL-3.0-only"
+readme = "README.md"
 publish = false
 
 [lib]
