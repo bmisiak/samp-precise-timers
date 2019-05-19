@@ -1,5 +1,5 @@
 use samp::amx::Amx;
-use samp::cell::{AmxCell, AmxString, Ref};//, UnsizedBuffer, Buffer};
+use samp::cell::{AmxCell, AmxString, Ref};
 use samp::error::{AmxResult,AmxError};
 use samp::plugin::SampPlugin;
 use samp::{initialize_plugin, native};
@@ -16,7 +16,7 @@ enum PassedArgument {
     Str(Vec<u8>)
 }
 
-/// Internal struct representing a single scheduled timer
+/// The Timer struct represents a single scheduled timer
 #[derive(Debug, Clone)]
 struct Timer {
     next_trigger: Instant,
@@ -31,11 +31,11 @@ impl Timer {
     /// This function executes the callback provided to the `SetPreciseTimer` native.
     pub fn trigger(&mut self) -> AmxResult<()> {
 
-        /* Get the AMX which scheduled the timer */
+        // Get the AMX which scheduled the timer
         let amx = samp::amx::get(self.amx_identifier).ok_or(samp::error::AmxError::NotFound)?;
         let allocator = amx.allocator();
 
-        /* Push the timer's arguments onto the AMX stack, in first-in-last-out order, i.e. reversed */
+        // Push the timer's arguments onto the AMX stack, in first-in-last-out order, i.e. reversed
         for param in self.passed_arguments.iter().rev() {
             match param {
                 PassedArgument::Int(int_value) => amx.push(int_value)?,
@@ -48,10 +48,10 @@ impl Timer {
             }
         }
         
-        /* Execute the callback (after pushing its arguments onto the stack) */
+        // Execute the callback (after pushing its arguments onto the stack)
         amx.exec(self.amx_callback_index)?;
 
-        /* Return Result::Ok() with an empty value ("unit" ()) to indicate success. */
+        // Return Result::Ok() with an empty value ("unit" ()) to indicate success.
         Ok(())
     }
 }
@@ -70,15 +70,15 @@ impl PreciseTimers {
     #[native(raw,name="SetPreciseTimer")]
     pub fn create(&mut self, amx: &Amx, mut args: samp::args::Args) -> AmxResult<i32> {
         
-        /* Get the basic, mandatory timer parameters */
+        // Get the basic, mandatory timer parameters
         let callback_name = args.next::<AmxString>().ok_or(AmxError::Params)?;
         let interval = args.next::<i32>().ok_or(AmxError::Params)?;
         let repeat = args.next::<bool>().ok_or(AmxError::Params)?;
         let argument_type_lettters = args.next::<AmxString>().ok_or(AmxError::Params)?.to_bytes(); //iterator on AmxString would be more efficient if it was implemented
 
-        /* Make sure they're sane */
+        // Make sure they're sane
         if argument_type_lettters.len() != args.count() - 4 {
-            error!("The amount of arguments passed does not match the list of types.");
+            error!("The amount of callback arguments passed ({}) does not match the length of the list of types ({}).",args.count() - 4, argument_type_lettters.len());
             return Err(AmxError::Params);
         }
 
@@ -89,7 +89,7 @@ impl PreciseTimers {
 
         let interval = Duration::from_millis(interval as u64);
 
-        /* Get the arguments to pass to the callback */
+        // Get the arguments to pass to the callback
         let mut passed_arguments: Vec<PassedArgument> = Vec::with_capacity(argument_type_lettters.len());
 
         for type_letter in argument_type_lettters {
@@ -114,10 +114,10 @@ impl PreciseTimers {
             }
         }
 
-        /* Find the callback by name and save its index */
+        // Find the callback by name and save its index
         let callback_index = amx.find_public(&callback_name.to_string())?;
         
-        /* Add the timer to the list. This is safe for Slab::retain() even if SetPreciseTimer was called from a timer's callback. */
+        // Add the timer to the list. This is safe for Slab::retain() even if SetPreciseTimer was called from a timer's callback.
         let timer = Timer {
             next_trigger: Instant::now() + interval,
             interval: if repeat { Some(interval) } else { None },
@@ -129,7 +129,7 @@ impl PreciseTimers {
         
         let key: usize = self.timers.insert(timer);
 
-        /* Return the timer's slot in Slab<> incresed by 1, so that 0 signifies an invalid timer in PAWN */
+        // Return the timer's slot in Slab<> incresed by 1, so that 0 signifies an invalid timer in PAWN
         Ok((key as i32) + 1)
     }
 
@@ -169,7 +169,7 @@ impl SampPlugin for PreciseTimers {
         self.timers.retain( |_key: usize, timer: &mut Timer| {
             if timer.next_trigger <= now {
                 if timer.scheduled_for_removal {
-                    //REMOVE timer and don't execute its callback.
+                    // REMOVE timer and don't execute its callback.
                     return false;
                 } else {
                     // Execute the callback:
@@ -179,15 +179,15 @@ impl SampPlugin for PreciseTimers {
 
                     if let Some(interval) = timer.interval {
                         timer.next_trigger = now + interval;
-                        //Keep the timer, because it repeats
+                        // Keep the timer, because it repeats
                         return true;
                     } else {
-                        //REMOVE the timer. It got triggered and does not repeat
+                        // REMOVE the timer. It got triggered and does not repeat
                         return false;
                     }
                 }
             } else {
-                //Keep the timer because it has yet to be triggered
+                // Keep the timer because it has yet to be triggered
                 return true;
             }
         });
