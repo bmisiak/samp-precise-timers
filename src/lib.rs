@@ -7,10 +7,8 @@ use samp::plugin::SampPlugin;
 use samp::{initialize_plugin, native};
 
 use std::time::{Instant,Duration};
-
+use slab::Slab;
 use log::{info, error};
-
-static mut EXECUTING_CALLBACK: bool = false;
 
 /// These are the types of arguments the plugin supports for passing on to the callback.
 #[derive(Debug, Clone)]
@@ -62,8 +60,7 @@ impl Timer {
 
 /// The plugin and its data: a list of scheduled timers
 struct PreciseTimers {
-    timers: Vec<Timer>,
-    timers_added_from_pawn_callbacks_during_iteration: Vec<Timer>
+    timers: Slab<Timer>,
 }
 
 impl PreciseTimers {
@@ -132,20 +129,10 @@ impl PreciseTimers {
             scheduled_for_removal: false
         };
         
-        /* 
-        💀⚠ If our process_tick is in progress, it means one of the timers' callbacks called SetPreciseTimer
-        (this very function). If we add the timer to self.timers at this point, we could invalidate the
-        drain_filter() iterator. Instead, we add the timer to a separate list.
-        Then, in process_tick, we merge the list into self.timers after iteration.
-        */
-        if unsafe { EXECUTING_CALLBACK } {
-            self.timers_added_from_pawn_callbacks_during_iteration.push(timer);
-        } else {
-            self.timers.push(timer);
-        }
+        let key: usize = self.timers.insert(timer);
 
-        /* Return the timer's slot in Vec<> incresed by 1, so that 0 signifies an invalid timer in PAWN */
-        Ok(self.timers.len() as i32)
+        /* Return the timer's slot in Slab<> incresed by 1, so that 0 signifies an invalid timer in PAWN */
+        Ok((key as i32) + 1)
     }
 
     /// This function is called from PAWN via the C foreign function interface.
@@ -155,10 +142,10 @@ impl PreciseTimers {
     /// ```
     #[native(name = "DeletePreciseTimer")]
     pub fn delete(&mut self, _: &Amx, timer_number: usize) -> AmxResult<i32> {
-        /* Subtract 1 from the passed timer_number to get the actual Vec<> slot */
+        // Subtract 1 from the passed timer_number (where 0=invalid) to get the actual Slab<> slot
         match self.timers.get_mut(timer_number - 1) {
             Some(timer) => {
-                /* We defer the removal so that we don't mess up the process_tick()->drain_filter() iterator. */
+                // We defer the removal so that we don't mess up the process_tick()->retain() iterator.
                 timer.scheduled_for_removal = true;
                 Ok(1)
             },
@@ -177,38 +164,33 @@ impl SampPlugin for PreciseTimers {
         // Rust's Instant is monotonic and nondecreasing. 💖 Works even during NTP time adjustment.
         let now = Instant::now();
 
-        // 💀⚠ Because of FFI with C, Rust can't notice the simultaenous mutation of self.timers, but the iterator can get messed up in case of
-        // drain_filter() -> Timer::trigger() -> PAWN callback/ffi -> PreciseTimers::create/delete -> self.timers.push (when over capacity)/remove. 
-        // That's why the DeletePreciseTimer() schedules timers for deletion instead of doing it right away, and SetPreciseTimer() adds them to a separate list.
-        self.timers.append(&mut self.timers_added_from_pawn_callbacks_during_iteration);
-
-        self.timers.drain_filter( |timer: &mut Timer| {
-            if timer.next_trigger >= now {
+        // 💀⚠ Because of FFI with C, Rust can't notice the simultaenous mutation of self.timers, but the iterator could get messed up in case of
+        // Slab::retain() -> Timer::trigger() -> PAWN callback/ffi -> DeletePreciseTimer()->Slab::remove.
+        // That's why the DeletePreciseTimer() schedules timers for deletion instead of doing it right away.
+        // Slab::retain() is, however, okay with inserting new timers during its execution, even in case of reallocation when over capacity.
+        self.timers.retain( |_key: usize, timer: &mut Timer| {
+            if timer.next_trigger <= now {
                 if timer.scheduled_for_removal {
-                    //If scheduled for deletion, delete and don't execute the callback.
-                    return true;
+                    //REMOVE timer and don't execute its callback.
+                    return false;
                 } else {
-                    unsafe { EXECUTING_CALLBACK = true; }
-                    
                     // Execute the callback:
                     if let Err(err) = timer.trigger() {
                         error!("Error executing callback: {}",err);
                     }
 
-                    unsafe { EXECUTING_CALLBACK = false; }
-                    
                     if let Some(interval) = timer.interval {
                         timer.next_trigger = now + interval;
                         //Keep the timer, because it repeats
-                        return false;
+                        return true;
                     } else {
                         //REMOVE the timer. It got triggered and does not repeat
-                        return true;
+                        return false;
                     }
                 }
             } else {
                 //Keep the timer because it has yet to be triggered
-                return false;
+                return true;
             }
         });
     }
@@ -233,8 +215,7 @@ initialize_plugin!(
             .apply();
         
         return PreciseTimers {
-            timers: Vec::with_capacity(1000),
-            timers_added_from_pawn_callbacks_during_iteration: Vec::with_capacity(10)
+            timers: Slab::with_capacity(1000)
         };
     }
 );
