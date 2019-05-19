@@ -92,7 +92,7 @@ impl PreciseTimers {
 
         for type_letter in argument_type_lettters {
             match type_letter {
-                b'd' | b'i' | b'f' => {
+                b'd' | b'i' | b'f' | b'b' => {
                     let argument: Ref<i32> = args.next().ok_or(AmxError::Params)?;
                     passed_arguments.push( PassedArgument::PrimitiveCell( *argument ) );
                 },
