@@ -11,8 +11,7 @@ use log::{info, error};
 /// These are the types of arguments the plugin supports for passing on to the callback.
 #[derive(Debug, Clone)]
 enum PassedArgument {
-    Int(i32),
-    Float(f32),
+    PrimitiveCell(i32),
     Str(Vec<u8>)
 }
 
@@ -38,8 +37,7 @@ impl Timer {
         // Push the timer's arguments onto the AMX stack, in first-in-last-out order, i.e. reversed
         for param in self.passed_arguments.iter().rev() {
             match param {
-                PassedArgument::Int(int_value) => amx.push(int_value)?,
-                PassedArgument::Float(float_value) => amx.push(float_value)?,
+                PassedArgument::PrimitiveCell(cell_value) => amx.push(cell_value)?,
                 PassedArgument::Str(bytes) => {
                     let buffer = allocator.allot_buffer(bytes.len() + 1)?;
                     let amx_str = unsafe { AmxString::new(buffer, bytes) };
@@ -94,13 +92,9 @@ impl PreciseTimers {
 
         for type_letter in argument_type_lettters {
             match type_letter {
-                b'd' | b'i' => {
+                b'd' | b'i' | b'f' => {
                     let argument: Ref<i32> = args.next().ok_or(AmxError::Params)?;
-                    passed_arguments.push( PassedArgument::Int( *argument ) );
-                },
-                b'f' => {
-                    let argument: Ref<f32> = args.next().ok_or(AmxError::Params)?;
-                    passed_arguments.push( PassedArgument::Float( f32::from_raw(amx,argument.address())? ) );
+                    passed_arguments.push( PassedArgument::PrimitiveCell( *argument ) );
                 },
                 b's' => {
                     let argument: Ref<i32> = args.next().ok_or(AmxError::Params)?;
