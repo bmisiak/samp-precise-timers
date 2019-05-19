@@ -148,7 +148,7 @@ impl PreciseTimers {
 
 impl SampPlugin for PreciseTimers {
     fn on_load(&mut self) {
-        info!("samp-precise-imers by Brian Misiak loaded correctly.");
+        info!("net4game.com/samp-precise-timers by Brian Misiak loaded correctly.");
     }
 
     #[inline(always)]
