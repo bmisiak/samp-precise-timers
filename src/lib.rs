@@ -1,5 +1,3 @@
-#![feature(drain_filter, try_trait)]
-
 use samp::amx::Amx;
 use samp::cell::{AmxCell, AmxString, Ref};//, UnsizedBuffer, Buffer};
 use samp::error::{AmxResult,AmxError};
@@ -119,7 +117,7 @@ impl PreciseTimers {
         /* Find the callback by name and save its index */
         let callback_index = amx.find_public(&callback_name.to_string())?;
         
-        /* Add the timer to the list. Won't this mess up the iterator in case of a reallocation? */
+        /* Add the timer to the list. This is safe for Slab::retain() even if SetPreciseTimer was called from a timer's callback. */
         let timer = Timer {
             next_trigger: Instant::now() + interval,
             interval: if repeat { Some(interval) } else { None },
