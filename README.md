@@ -9,7 +9,7 @@ Take a look at the code to see the benefits.
 ### Notes
 * Calling `DeletePreciseTimer` from a timer's callback works fine. ✔
 * Creating new timers from callbacks works fine as well. ✔
-
+* Supports strings and arrays properly without memory leaks. ✔
 
 ## Compiling
 Install Rust from [rustup.rs](https://rustup.rs). Afterwards, you are two commands away from being able to compile for SA-MP, which is a 32-bit application.

@@ -12,7 +12,8 @@ use log::{info, error};
 #[derive(Debug, Clone)]
 enum PassedArgument {
     PrimitiveCell(i32),
-    Str(Vec<u8>)
+    Str(Vec<u8>),
+    Array(Vec<i32>),
 }
 
 /// The Timer struct represents a single scheduled timer
@@ -37,11 +38,18 @@ impl Timer {
         // Push the timer's arguments onto the AMX stack, in first-in-last-out order, i.e. reversed
         for param in self.passed_arguments.iter().rev() {
             match param {
-                PassedArgument::PrimitiveCell(cell_value) => amx.push(cell_value)?,
+                PassedArgument::PrimitiveCell(cell_value) => {
+                    amx.push(cell_value)?;
+                }
                 PassedArgument::Str(bytes) => {
                     let buffer = allocator.allot_buffer(bytes.len() + 1)?;
                     let amx_str = unsafe { AmxString::new(buffer, bytes) };
-                    amx.push(amx_str)?
+                    amx.push(amx_str)?;
+                },
+                PassedArgument::Array(array_cells) => {
+                    let amx_buffer = allocator.allot_array(array_cells.as_slice())?;
+                    amx.push(amx_buffer)?;
+                    amx.push(array_cells.len())?; // Pushing the length too, because it always precedes the array cell and might be useful for the callback.
                 }
             }
         }
@@ -63,7 +71,7 @@ impl PreciseTimers {
     /// This function is called from PAWN via the C foreign function interface.
     /// It returns the timer identifier or 0 in case of failure.
     ///  ```
-    /// native SetPreciseTimer(const callback_name[], const interval, const bool:repeat, const types_of_arguments[]="", ...);
+    /// native SetPreciseTimer(const callback_name[], const interval, const bool:repeat, const types_of_arguments[]="", {Float,_}:...);
     /// ```
     #[native(raw,name="SetPreciseTimer")]
     pub fn create(&mut self, amx: &Amx, mut args: samp::args::Args) -> AmxResult<i32> {
@@ -87,9 +95,11 @@ impl PreciseTimers {
 
         let interval = Duration::from_millis(interval as u64);
 
-        // Get the arguments to pass to the callback
+        // Arrays (a) have to be preceded by the array length parameter (A), which stores the length here:
+        let mut length_provided_for_next_array: Option<usize> = None;
         let mut passed_arguments: Vec<PassedArgument> = Vec::with_capacity(argument_type_lettters.len());
-
+        
+        // Get the arguments to pass on to the callback
         for type_letter in argument_type_lettters {
             match type_letter {
                 b'd' | b'i' | b'f' | b'b' => {
@@ -101,8 +111,27 @@ impl PreciseTimers {
                     let amx_str = AmxString::from_raw(amx,argument.address())?;
                     passed_arguments.push( PassedArgument::Str(amx_str.to_bytes()) );
                 },
+                b'A' => {
+                    if length_provided_for_next_array == None {
+                        let argument: Ref<usize> = args.next().ok_or(AmxError::Params)?;
+                        length_provided_for_next_array = Some(*argument);
+                    } else {
+                        error!("Extraneous array length parameter (A). Don't forget actual arrays (a).");
+                        return Err(AmxError::Params);
+                    }
+                }
+                b'a' => {
+                    if let Some(array_length) = length_provided_for_next_array.take() {
+                        let argument: samp::cell::UnsizedBuffer = args.next().ok_or(AmxError::Params)?;
+                        let buffer = argument.into_sized_buffer(array_length);
+                        passed_arguments.push( PassedArgument::Array( buffer.as_slice().to_vec() ) );
+                    } else {
+                        error!("Array arguments (a) must be preceded by an array length argument (A).");
+                        return Err(AmxError::Params);
+                    }
+                }
                 _ => {
-                    error!("Unsupported argument type: {}",type_letter);
+                    error!("Unsupported argument type: {}",type_letter as char);
                     return Err(AmxError::Params);
                 }
             }
