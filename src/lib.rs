@@ -1,8 +1,7 @@
-use samp::amx::Amx;
+use samp::amx::{Amx,AmxIdent};
 use samp::cell::{AmxCell, AmxString, Ref};
 use samp::error::{AmxResult,AmxError};
 use samp::plugin::SampPlugin;
-use samp::{initialize_plugin, native};
 
 use std::time::{Instant,Duration};
 use slab::Slab;
@@ -22,7 +21,7 @@ struct Timer {
     next_trigger: Instant,
     interval: Option<Duration>,
     passed_arguments: Vec<PassedArgument>,
-    amx_identifier: samp::amx::AmxIdent,
+    amx_identifier: AmxIdent,
     amx_callback_index: samp::consts::AmxExecIdx,
     scheduled_for_removal: bool
 }
@@ -73,7 +72,7 @@ impl PreciseTimers {
     ///  ```
     /// native SetPreciseTimer(const callback_name[], const interval, const bool:repeat, const types_of_arguments[]="", {Float,_}:...);
     /// ```
-    #[native(raw,name="SetPreciseTimer")]
+    #[samp::native(raw,name="SetPreciseTimer")]
     pub fn create(&mut self, amx: &Amx, mut args: samp::args::Args) -> AmxResult<i32> {
         
         // Get the basic, mandatory timer parameters
@@ -140,16 +139,16 @@ impl PreciseTimers {
         // Find the callback by name and save its index
         let callback_index = amx.find_public(&callback_name.to_string())?;
         
-        // Add the timer to the list. This is safe for Slab::retain() even if SetPreciseTimer was called from a timer's callback.
         let timer = Timer {
             next_trigger: Instant::now() + interval,
             interval: if repeat { Some(interval) } else { None },
             passed_arguments: passed_arguments,
-            amx_identifier: samp::amx::AmxIdent::from(amx.amx().as_ptr()),
+            amx_identifier: AmxIdent::from(amx.amx().as_ptr()),
             amx_callback_index: callback_index,
             scheduled_for_removal: false
         };
         
+        // Add the timer to the list. This is safe for Slab::retain() even if SetPreciseTimer was called from a timer's callback.
         let key: usize = self.timers.insert(timer);
 
         // Return the timer's slot in Slab<> incresed by 1, so that 0 signifies an invalid timer in PAWN
@@ -161,7 +160,7 @@ impl PreciseTimers {
     ///  ```
     /// native DeletePreciseTimer(timer_number)
     /// ```
-    #[native(name = "DeletePreciseTimer")]
+    #[samp::native(name = "DeletePreciseTimer")]
     pub fn delete(&mut self, _: &Amx, timer_number: usize) -> AmxResult<i32> {
         // Subtract 1 from the passed timer_number (where 0=invalid) to get the actual Slab<> slot
         match self.timers.get_mut(timer_number - 1) {
@@ -215,9 +214,15 @@ impl SampPlugin for PreciseTimers {
             }
         });
     }
+
+    fn on_amx_unload(&mut self, unloaded_amx: &Amx) {
+        self.timers.retain( |_key: usize, timer: &mut Timer| {
+            timer.amx_identifier != AmxIdent::from(unloaded_amx.amx().as_ptr())
+        });
+    }
 }
 
-initialize_plugin!(
+samp::initialize_plugin!(
     natives: [
         PreciseTimers::delete,
         PreciseTimers::create,
