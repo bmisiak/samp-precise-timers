@@ -101,10 +101,6 @@ impl PreciseTimers {
         // Get the arguments to pass on to the callback
         for type_letter in argument_type_lettters {
             match type_letter {
-                b'd' | b'i' | b'f' | b'b' | b'c' => {
-                    let argument: Ref<i32> = args.next().ok_or(AmxError::Params)?;
-                    passed_arguments.push( PassedArgument::PrimitiveCell( *argument ) );
-                },
                 b's' => {
                     let argument: Ref<i32> = args.next().ok_or(AmxError::Params)?;
                     let amx_str = AmxString::from_raw(amx,argument.address())?;
@@ -130,8 +126,8 @@ impl PreciseTimers {
                     }
                 }
                 _ => {
-                    error!("Unsupported argument type: {}",type_letter as char);
-                    return Err(AmxError::Params);
+                    let argument: Ref<i32> = args.next().ok_or(AmxError::Params)?;
+                    passed_arguments.push( PassedArgument::PrimitiveCell( *argument ) );
                 }
             }
         }
