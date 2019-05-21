@@ -1,6 +1,11 @@
 # samp-precise-timers ⌚
 Developed for [net4game.com](https://net4game.com) (RolePlay), this SA-MP plugin provides precise timers for the server. It is written in [Rust](https://rust-lang.org), a memory-safe language.
 
+Available on [sampctl](https://github.com/Southclaws/sampctl): 
+```
+bmisiak/samp-precise-timers
+```
+
 ### Why rewrite timers?
 I had a lot of safety concerns with some of the existing solutions. They weren't written with data integrity, memory safety or preventing server crashes in mind and seemed to have quite a few bugs. As privacy and safety is our primary concern at net4game, I wrote this in Rust, which combines high-level ergonomics with the performance of a low-level language. ⚡
 
