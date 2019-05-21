@@ -1,0 +1,24 @@
+    
+{
+    "user": "bmisiak",
+    "repo": "samp-precise-timers",
+    "resources": [
+        {
+            "name": "^samp-precise-timers-(.*).zip$",
+            "platform": "linux",
+            "archive": true,
+            "includes": ["include"],
+            "plugins": ["plugins/samp-precise-timers.so"]
+        },
+        {
+            "name": "^samp-precise-timers-(.*).zip$",
+            "platform": "windows",
+            "archive": true,
+            "includes": ["include"],
+            "plugins": ["plugins/samp-precise-timers.dll"]
+        }
+    ],
+    "runtime": {
+        "plugins": ["bmisiak/samp-precise-timers"]
+    }
+}
