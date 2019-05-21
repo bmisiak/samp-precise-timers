@@ -47,8 +47,8 @@ impl Timer {
                 },
                 PassedArgument::Array(array_cells) => {
                     let amx_buffer = allocator.allot_array(array_cells.as_slice())?;
+                    amx.push(array_cells.len())?; // Stacking the length first because it appears after the array.
                     amx.push(amx_buffer)?;
-                    amx.push(array_cells.len())?; // Pushing the length too, because it always precedes the array cell and might be useful for the callback.
                 }
             }
         }
@@ -94,34 +94,31 @@ impl PreciseTimers {
 
         let interval = Duration::from_millis(interval as u64);
 
-        // Arrays (a) have to be preceded by the array length parameter (A), which stores the length here:
-        let mut length_provided_for_next_array: Option<usize> = None;
-        let mut passed_arguments: Vec<PassedArgument> = Vec::with_capacity(argument_type_lettters.len());
-        
         // Get the arguments to pass on to the callback
-        for type_letter in argument_type_lettters {
+        let mut passed_arguments: Vec<PassedArgument> = Vec::with_capacity(argument_type_lettters.len());
+        let mut type_iterator = argument_type_lettters.iter();
+        
+        while let Some(type_letter) = type_iterator.next() {
             match type_letter {
                 b's' => {
                     let argument: Ref<i32> = args.next().ok_or(AmxError::Params)?;
                     let amx_str = AmxString::from_raw(amx,argument.address())?;
                     passed_arguments.push( PassedArgument::Str(amx_str.to_bytes()) );
                 },
-                b'A' => {
-                    if length_provided_for_next_array == None {
-                        let argument: Ref<usize> = args.next().ok_or(AmxError::Params)?;
-                        length_provided_for_next_array = Some(*argument);
-                    } else {
-                        error!("Extraneous array length parameter (A). Don't forget actual arrays (a).");
-                        return Err(AmxError::Params);
-                    }
-                }
                 b'a' => {
-                    if let Some(array_length) = length_provided_for_next_array.take() {
-                        let argument: samp::cell::UnsizedBuffer = args.next().ok_or(AmxError::Params)?;
-                        let buffer = argument.into_sized_buffer(array_length);
-                        passed_arguments.push( PassedArgument::Array( buffer.as_slice().to_vec() ) );
+                    if let Some(b'i') | Some(b'A') = type_iterator.next() {
+                        let array_argument: samp::cell::UnsizedBuffer = args.next().ok_or(AmxError::Params)?;
+                        let length_argument: Ref<i32> = args.next().ok_or(AmxError::Params)?;
+                        
+                        if *length_argument < 0 {
+                            error!("Array size cannot be negative.");
+                            return Err(AmxError::Params);
+                        }
+
+                        let amx_buffer = array_argument.into_sized_buffer(*length_argument as usize);
+                        passed_arguments.push( PassedArgument::Array( amx_buffer.as_slice().to_vec() ) );
                     } else {
-                        error!("Array arguments (a) must be preceded by an array length argument (A).");
+                        error!("Array arguments (a) must be followed by an array length argument (i/A).");
                         return Err(AmxError::Params);
                     }
                 }
@@ -212,6 +209,7 @@ impl SampPlugin for PreciseTimers {
     }
 
     fn on_amx_unload(&mut self, unloaded_amx: &Amx) {
+        // Retain only timers scheduled by an AMX other than the unloaded one.
         self.timers.retain( |_key: usize, timer: &mut Timer| {
             timer.amx_identifier != AmxIdent::from(unloaded_amx.amx().as_ptr())
         });
