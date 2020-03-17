@@ -3,8 +3,6 @@ Developed for [net4game.com](https://net4game.com) (RolePlay), this SA-MP plugin
 
 
 ## Installation
-[![sampctl](https://shields.southcla.ws/badge/sampctl-samp--precise--timers-2f2f2f.svg?style=for-the-badge)](https://github.com/bmisiak/samp-precise-timers)
-
 Simply install to your project:
 ```bash
 sampctl package install bmisiak/samp-precise-timers
@@ -13,10 +11,6 @@ Include in your code and begin using the library:
 
 ```pawn
 #include <samp-precise-timers>
-```
-
-```
-bmisiak/samp-precise-timers
 ```
 
 ### Why rewrite timers?
