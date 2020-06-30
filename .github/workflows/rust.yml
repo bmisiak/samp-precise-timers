@@ -11,13 +11,17 @@ env:
 
 jobs:
   build:
-
+    name: Linux GLIBC_2_15
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v2
-    - name: Build
-      run: |
-        sudo apt-get install -y build-essential gcc-multilib
-        rustup target add i686-unknown-linux-gnu
-        cargo build --verbose --target=i686-unknown-linux-gnu
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: i686-unknown-linux-gnu
+          override: true
+      - uses: actions-rs/cargo@v1
+        with:
+          use-cross: true
+          command: build
+          args: --target i686-unknown-linux-gnu
