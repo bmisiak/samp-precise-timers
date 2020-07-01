@@ -26,7 +26,7 @@ jobs:
         with:
           use-cross: true
           command: build
-          args: --target i686-unknown-linux-gnu
+          args: --target i686-unknown-linux-gnu --release
       - name: Create Linux release
         id: create_release
         uses: actions/create-release@v1
