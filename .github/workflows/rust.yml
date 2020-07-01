@@ -10,7 +10,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  build-linux:
     name: Linux GLIBC_2_15
     runs-on: ubuntu-latest
     steps:
@@ -47,3 +47,36 @@ jobs:
           asset_path: ./target/i686-unknown-linux-gnu/release/libnfg_timer.so
           asset_name: samp-precise-timers.so
           asset_content_type: application/x-sharedlib
+  build-windows:
+    runs-on: windows-19
+    strategy:
+      matrix:
+        os: [windows-latest]
+        rust: [stable]
+    steps:
+      - uses: hecrj/setup-rust-action@v1
+        with:
+          rust-version: ${{ matrix.rust }}
+      - uses: actions/checkout@v2
+      - name: Build for Windows
+        run: rustup target add i686-pc-windows-msvc && cargo build --release --target i686-pc-windows-msvc
+      - name: Create Windows release
+        id: create_release_windows
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: true
+          prerelease: false
+      - name: Upload Windows Release Asset
+        id: upload-release-asset-windows
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release_windows.outputs.upload_url }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
+          asset_path: ./target/i686-pc-windows-msvc/release/libnfg_timer.dll
+          asset_name: samp-precise-timers.dll
+          asset_content_type: application/octet-stream
