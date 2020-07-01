@@ -48,7 +48,7 @@ jobs:
           asset_name: samp-precise-timers.so
           asset_content_type: application/x-sharedlib
   build-windows:
-    runs-on: windows-19
+    runs-on: windows-latest
     strategy:
       matrix:
         os: [windows-latest]
