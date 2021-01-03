@@ -14,7 +14,7 @@ Include in your code and begin using the library:
 ```
 
 ### Why rewrite timers?
-I had a lot of safety concerns with some of the existing solutions. They weren't written with data integrity, memory safety or preventing server crashes in mind and seemed to have quite a few bugs. As privacy and safety is our primary concern at net4game, I wrote this in Rust, which combines high-level ergonomics with the performance of a low-level language. ⚡
+I had a lot of safety concerns with some of the existing solutions. They weren't written with data integrity, memory safety or preventing server crashes in mind and seemed to have quite a few bugs. This is written in Rust, which combines high-level ergonomics with the performance of a low-level language. ⚡
 
 Take a look at the code to see the benefits.
 
