@@ -240,6 +240,7 @@ samp::initialize_plugin!(
     natives: [
         PreciseTimers::delete,
         PreciseTimers::create,
+        PreciseTimers::reset,
     ],
     {
         samp::plugin::enable_process_tick();
