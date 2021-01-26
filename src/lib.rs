@@ -165,6 +165,26 @@ impl PreciseTimers {
             None => Ok(0)
         }
     }
+
+    /// This function is called from PAWN via the C foreign function interface.
+    /// Returns 0 if the timer does not exist, otherwise 
+    ///  ```
+    /// native ResetPreciseTimer(timer_number, const interval, const bool:repeat)
+    /// ```
+    #[samp::native(name = "ResetPreciseTimer")]
+    pub fn reset(&mut self, _: &Amx, timer_number: usize, interval: i32, repeat: bool) -> AmxResult<i32> {
+        // Subtract 1 from the passed timer_number (where 0=invalid) to get the actual Slab<> slot
+        match self.timers.get_mut(timer_number - 1) {
+            Some(timer) => {
+                // We defer the removal so that we don't mess up the process_tick()->retain() iterator.
+                let interval = Duration::from_millis(interval as u64);
+                timer.next_trigger = Instant::now() + interval;
+                timer.interval = if repeat { Some(interval) } else { None };
+                Ok(1)
+            },
+            None => Ok(0)
+        }
+    }
 }
 
 impl SampPlugin for PreciseTimers {
