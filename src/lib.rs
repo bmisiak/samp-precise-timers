@@ -55,8 +55,7 @@ impl Timer {
         
         // Execute the callback (after pushing its arguments onto the stack)
         amx.exec(self.amx_callback_index)?;
-
-        // Return Result::Ok() with an empty value ("unit" ()) to indicate success.
+        
         Ok(())
     }
 }
