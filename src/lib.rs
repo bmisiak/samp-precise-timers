@@ -203,7 +203,7 @@ impl SampPlugin for PreciseTimers {
                     if let Some(interval) = timer.interval {
                         timer.next_trigger = now + interval;
                         // It repeats. Keep it, unless removed by PAWN when it was triggered just now
-                        !this.scheduled_for_removal
+                        !timer.scheduled_for_removal
                     } else {
                         // Remove the timer. It got triggered and does not repeat
                         false
