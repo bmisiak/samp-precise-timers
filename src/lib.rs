@@ -123,7 +123,7 @@ impl PreciseTimers {
     }
 
     /// This function is called from PAWN via the C foreign function interface.
-    /// Returns 0 if the timer does not exist, otherwise 
+    /// Returns 0 if the timer does not exist, 1 if removed. 
     ///  ```
     /// native ResetPreciseTimer(timer_number, const interval, const bool:repeat)
     /// ```
@@ -202,8 +202,8 @@ impl SampPlugin for PreciseTimers {
 
                     if let Some(interval) = timer.interval {
                         timer.next_trigger = now + interval;
-                        // Keep the timer, because it repeats
-                        true
+                        // It repeats. Keep it, unless removed by PAWN when it was triggered just now
+                        !this.scheduled_for_removal
                     } else {
                         // Remove the timer. It got triggered and does not repeat
                         false
