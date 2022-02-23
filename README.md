@@ -14,7 +14,7 @@ Include in your code and begin using the library:
 ```
 
 ### Why rewrite timers?
-SA-MP's built-in timers are written in a truly awful manner with a progressively worse inconsistency. Alternatives are written without regard for data integrity, memory safety or preventing server crashes in mind and seemed to have quite a few bugs. This is written in Rust, which combines high-level ergonomics with the performance of a low-level language. As a result, the code is much cleaner and easily auditable.
+SA-MP's built-in timers are written in a truly awful manner with progressively worse inconsistency. Alternatives are written without regard for data integrity, memory safety or preventing server crashes in mind and seemed to have quite a few bugs. This is written in Rust, which combines high-level ergonomics with the performance of a low-level language. As a result, the code is much cleaner and easily auditable.
 
 Take a look at the source to see the benefits.
 
