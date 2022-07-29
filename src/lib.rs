@@ -1,69 +1,16 @@
-use samp::amx::{Amx,AmxIdent};
+use log::{error, info};
+use samp::amx::{Amx, AmxIdent};
 use samp::cell::AmxString;
-use samp::error::{AmxResult,AmxError};
+use samp::error::{AmxError, AmxResult};
 use samp::plugin::SampPlugin;
-use std::time::{Instant,Duration};
 use slab::Slab;
-use log::{info, error};
 use std::convert::TryFrom;
+use std::time::{Duration, Instant};
+use timer::Timer;
+use amx_arguments::parse_variadic_arguments_passed_into_timer;
 
-/// These are the types of arguments the plugin supports for passing on to the callback.
-#[derive(Debug, Clone)]
-enum PassedArgument {
-    PrimitiveCell(i32),
-    Str(Vec<u8>),
-    Array(Vec<i32>),
-}
-
-/// The Timer struct represents a single scheduled timer
-#[derive(Debug, Clone)]
-struct Timer {
-    next_trigger: Instant,
-    interval: Option<Duration>,
-    passed_arguments: Vec<PassedArgument>,
-    amx_identifier: AmxIdent,
-    amx_callback_index: samp::consts::AmxExecIdx,
-    scheduled_for_removal: bool
-}
-
-impl Timer {
-    /// This function executes the callback provided to the `SetPreciseTimer` native.
-    pub fn trigger(&mut self) -> AmxResult<()> {
-
-        // Get the AMX which scheduled the timer
-        let amx = samp::amx::get(self.amx_identifier).ok_or(AmxError::NotFound)?;
-        let allocator = amx.allocator();
-
-        // Push the timer's arguments onto the AMX stack, in first-in-last-out order, i.e. reversed
-        for param in self.passed_arguments.iter().rev() {
-            match param {
-                PassedArgument::PrimitiveCell(cell_value) => {
-                    amx.push(cell_value)?;
-                }
-                PassedArgument::Str(bytes) => {
-                    let buffer = allocator.allot_buffer(bytes.len() + 1)?;
-                    let amx_str = unsafe { AmxString::new(buffer, bytes) };
-                    amx.push(amx_str)?;
-                },
-                PassedArgument::Array(array_cells) => {
-                    let amx_buffer = allocator.allot_array(array_cells.as_slice())?;
-                    amx.push(array_cells.len())?;
-                    amx.push(amx_buffer)?;
-                }
-            }
-        }
-        
-        // Execute the callback (after pushing its arguments onto the stack)
-        // Amx::exec should actually be marked unsafe in the samp-rs crate
-        amx.exec(self.amx_callback_index)?;
-        
-        Ok(())
-    }
-
-    pub fn was_scheduled_by_amx(&self, amx: &samp::amx::Amx) -> bool {
-        self.amx_identifier == AmxIdent::from(amx.amx().as_ptr())
-    }
-}
+mod amx_arguments;
+mod timer;
 
 /// The plugin and its data: a list of scheduled timers
 struct PreciseTimers {
@@ -76,27 +23,31 @@ impl PreciseTimers {
     /// ```
     /// native SetPreciseTimer(const callback_name[], const interval, const bool:repeat, const types_of_arguments[]="", {Float,_}:...);
     /// ```
-    #[samp::native(raw,name="SetPreciseTimer")]
+    #[samp::native(raw, name = "SetPreciseTimer")]
     pub fn create(&mut self, amx: &Amx, mut args: samp::args::Args) -> AmxResult<i32> {
-        
         // Get the basic, mandatory timer parameters
         let callback_name = args.next::<AmxString>().ok_or(AmxError::Params)?;
-        let interval = Duration::from_millis(args.next::<i32>().and_then(|ms| u64::try_from(ms).ok()).ok_or(AmxError::Params)?);
+        let interval = Duration::from_millis(
+            args.next::<i32>()
+                .and_then(|ms| u64::try_from(ms).ok())
+                .ok_or(AmxError::Params)?,
+        );
         let repeat = args.next::<bool>().ok_or(AmxError::Params)?;
-        let passed_arguments = Self::parse_variadic_arguments_passed_into_timer(args).ok_or(AmxError::Params)?;
+        let passed_arguments =
+            parse_variadic_arguments_passed_into_timer(args).ok_or(AmxError::Params)?;
 
         // Find the callback by name and save its index
         let amx_callback_index = amx.find_public(&callback_name.to_string())?;
-        
+
         let timer = Timer {
             next_trigger: Instant::now() + interval,
             interval: if repeat { Some(interval) } else { None },
             passed_arguments,
             amx_identifier: AmxIdent::from(amx.amx().as_ptr()),
             amx_callback_index,
-            scheduled_for_removal: false
+            scheduled_for_removal: false,
         };
-        
+
         // Add the timer to the list. This is safe for Slab::retain() even if SetPreciseTimer was called from a timer's callback.
         let key: usize = self.timers.insert(timer);
 
@@ -117,61 +68,33 @@ impl PreciseTimers {
                 // We defer the removal so that we don't mess up the process_tick()->retain() iterator.
                 timer.scheduled_for_removal = true;
                 Ok(1)
-            },
-            None => Ok(0)
+            }
+            None => Ok(0),
         }
     }
 
     /// This function is called from PAWN via the C foreign function interface.
-    /// Returns 0 if the timer does not exist, 1 if removed. 
+    /// Returns 0 if the timer does not exist, 1 if removed.
     ///  ```
     /// native ResetPreciseTimer(timer_number, const interval, const bool:repeat)
     /// ```
     #[samp::native(name = "ResetPreciseTimer")]
-    pub fn reset(&mut self, _: &Amx, timer_number: usize, interval: i32, repeat: bool) -> AmxResult<i32> {
+    pub fn reset(
+        &mut self,
+        _: &Amx,
+        timer_number: usize,
+        interval: i32,
+        repeat: bool,
+    ) -> AmxResult<i32> {
         match self.timers.get_mut(timer_number - 1) {
             Some(timer) => {
                 let interval = Duration::from_millis(interval as u64);
                 timer.next_trigger = Instant::now() + interval;
                 timer.interval = if repeat { Some(interval) } else { None };
                 Ok(1)
-            },
-            None => Ok(0)
+            }
+            None => Ok(0),
         }
-    }
-
-    /// Consumes variadic PAWN params into Vec<PassedArgument>
-    fn parse_variadic_arguments_passed_into_timer(mut args: samp::args::Args) -> Option<Vec<PassedArgument>> {
-        let argument_type_letters = args.next::<AmxString>()?.to_bytes();
-        if argument_type_letters.len() != args.count() - 4 {
-            error!("The amount of callback arguments passed ({}) does not match the length of the list of types ({}).",args.count() - 4, argument_type_letters.len());
-            return None;
-        }
-
-        let mut collected_arguments: Vec<PassedArgument> = Vec::with_capacity(argument_type_letters.len());
-        let mut argument_type_letters = argument_type_letters.iter();
-        
-        while let Some(type_letter) = argument_type_letters.next() {
-            collected_arguments.push( 
-                match type_letter {
-                    b's' => PassedArgument::Str( args.next::<AmxString>()?.to_bytes() ),
-                    b'a' => {
-                        if let Some(b'i') | Some(b'A') = argument_type_letters.next() {
-                            let array_argument: samp::cell::UnsizedBuffer = args.next()?;
-                            let length_argument = args.next::<i32>().and_then(|len| usize::try_from(len).ok())?;
-                            let amx_buffer = array_argument.into_sized_buffer(length_argument);
-
-                            PassedArgument::Array( amx_buffer.as_slice().to_vec() )
-                        } else {
-                            error!("Array arguments (a) must be followed by an array length argument (i/A).");
-                            return None;
-                        }
-                    },
-                    _ => PassedArgument::PrimitiveCell( args.next::<i32>()? )
-                }
-            );
-        }
-        Some(collected_arguments)
     }
 }
 
@@ -186,10 +109,10 @@ impl SampPlugin for PreciseTimers {
         let now = Instant::now();
 
         // 💀⚠ Because of FFI with C, Rust can't notice the simultaneous mutation of self.timers, but the iterator could get messed up in case of
-        // Slab::retain() -> Timer::trigger() -> PAWN callback/ffi -> DeletePreciseTimer() -> Slab::remove.
+        // Slab::retain() -> Timer::trigger() -> PAWN callback/ffi which calls DeletePreciseTimer() -> Slab::remove.
         // That's why the DeletePreciseTimer() schedules timers for deletion instead of doing it right away.
         // Slab::retain() is, however, okay with inserting new timers during its execution, even in case of reallocation when over capacity.
-        self.timers.retain( |_key: usize, timer: &mut Timer| {
+        self.timers.retain(|_key: usize, timer| {
             if timer.next_trigger <= now {
                 if timer.scheduled_for_removal {
                     // Remove timer and do not execute its callback.
@@ -197,7 +120,7 @@ impl SampPlugin for PreciseTimers {
                 } else {
                     // Execute the callback:
                     if let Err(err) = timer.trigger() {
-                        error!("Error executing timer callback: {}",err);
+                        error!("Error executing timer callback: {}", err);
                     }
 
                     if let Some(interval) = timer.interval {
@@ -217,7 +140,8 @@ impl SampPlugin for PreciseTimers {
     }
 
     fn on_amx_unload(&mut self, unloaded_amx: &Amx) {
-        self.timers.retain( |_, timer| !timer.was_scheduled_by_amx(unloaded_amx) )
+        self.timers
+            .retain(|_, timer| !timer.was_scheduled_by_amx(unloaded_amx))
     }
 }
 
@@ -239,7 +163,7 @@ samp::initialize_plugin!(
             })
             .chain(samp_logger)
             .apply();
-        
+
         PreciseTimers {
             timers: Slab::with_capacity(1000)
         }

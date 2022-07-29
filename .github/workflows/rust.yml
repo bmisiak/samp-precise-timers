@@ -24,29 +24,21 @@ jobs:
           override: true
       - uses: actions-rs/cargo@v1
         with:
-          use-cross: true
+          use-cross: true # cross uses glibc 2.15
           command: build
           args: --target i686-unknown-linux-gnu --release
-      - name: Create Linux release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          draft: true
-          prerelease: false
       - name: Upload Linux Release Asset
-        id: upload-release-asset 
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        id: upload-linux-release
+        uses: ncipollo/release-action@v1
         with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
-          asset_path: ./target/i686-unknown-linux-gnu/release/libnfg_timer.so
-          asset_name: samp-precise-timers.so
-          asset_content_type: application/x-sharedlib
+          artifacts: ./target/i686-unknown-linux-gnu/release/libsamp_precise_timers.so
+          replacesArtifacts: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+          allowUpdates: true
+          draft: true
+          omitBody: true
+          tag: ${{ github.ref }}
+          commit: ${{ github.ref }}
   build-windows:
     runs-on: windows-latest
     strategy:
@@ -60,23 +52,15 @@ jobs:
       - uses: actions/checkout@v2
       - name: Build for Windows
         run: rustup target add i686-pc-windows-msvc && cargo build --release --target i686-pc-windows-msvc
-      - name: Create Windows release
-        id: create_release_windows
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          draft: true
-          prerelease: false
       - name: Upload Windows Release Asset
-        id: upload-release-asset-windows
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        id: upload-windows-release
+        uses: ncipollo/release-action@v1
         with:
-          upload_url: ${{ steps.create_release_windows.outputs.upload_url }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
-          asset_path: .\target\i686-pc-windows-msvc\release\nfg_timer.dll
-          asset_name: samp-precise-timers.dll
-          asset_content_type: application/octet-stream
+          artifacts: .\target\i686-pc-windows-msvc\release\samp_precise_timers.dll
+          replacesArtifacts: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+          allowUpdates: true
+          draft: true
+          omitBody: true
+          tag: ${{ github.ref }}
+          commit: ${{ github.ref }}
