@@ -1,52 +1,82 @@
-use std::time::{Instant, Duration};
-use samp::{amx::AmxIdent, prelude::{AmxResult, AmxString}, error::AmxError};
-use crate::amx_arguments::PassedArgument;
+use crate::amx_arguments::{PassedArgument, VariadicAmxArguments};
+use log::error;
+use samp::{
+    amx::AmxIdent,
+    error::AmxError,
+    prelude::{AmxResult, AmxString},
+};
+use std::time::{Duration, Instant};
+
+#[derive(PartialEq)]
+pub enum TimerStaus {
+    MightTriggerInTheFuture,
+    WillNeverTriggerAgain,
+}
 
 /// The Timer struct represents a single scheduled timer
 #[derive(Debug, Clone)]
 pub struct Timer {
     pub next_trigger: Instant,
     pub interval: Option<Duration>,
-    pub passed_arguments: Vec<PassedArgument>,
+    pub passed_arguments: VariadicAmxArguments,
     pub amx_identifier: AmxIdent,
     pub amx_callback_index: samp::consts::AmxExecIdx,
     pub scheduled_for_removal: bool,
 }
 
 impl Timer {
+    pub fn was_scheduled_by_amx(&self, amx: &samp::amx::Amx) -> bool {
+        self.amx_identifier == AmxIdent::from(amx.amx().as_ptr())
+    }
+
     /// This function executes the callback provided to the `SetPreciseTimer` native.
     pub fn trigger(&mut self) -> AmxResult<()> {
         // Get the AMX which scheduled the timer
         let amx = samp::amx::get(self.amx_identifier).ok_or(AmxError::NotFound)?;
         let allocator = amx.allocator();
 
-        // Push the timer's arguments onto the AMX stack, in first-in-last-out order, i.e. reversed
-        for param in self.passed_arguments.iter().rev() {
-            match param {
-                PassedArgument::PrimitiveCell(cell_value) => {
-                    amx.push(cell_value)?;
-                }
-                PassedArgument::Str(bytes) => {
-                    let buffer = allocator.allot_buffer(bytes.len() + 1)?;
-                    let amx_str = unsafe { AmxString::new(buffer, bytes) };
-                    amx.push(amx_str)?;
-                }
-                PassedArgument::Array(array_cells) => {
-                    let amx_buffer = allocator.allot_array(array_cells.as_slice())?;
-                    amx.push(array_cells.len())?;
-                    amx.push(amx_buffer)?;
-                }
-            }
-        }
-
         // Execute the callback (after pushing its arguments onto the stack)
         // Amx::exec should actually be marked unsafe in the samp-rs crate
+        self.passed_arguments.push_onto_amx_stack(amx, allocator)?;
         amx.exec(self.amx_callback_index)?;
 
         Ok(())
     }
 
-    pub fn was_scheduled_by_amx(&self, amx: &samp::amx::Amx) -> bool {
-        self.amx_identifier == AmxIdent::from(amx.amx().as_ptr())
+    /// Checks if it's time to trigger the timer yet. If so, triggers it.
+    /// Returns info about whether the timer is okay to remove now
+    #[inline(always)]
+    pub fn trigger_if_necessary(&mut self, now: Instant) -> TimerStaus {
+        use TimerStaus::{MightTriggerInTheFuture, WillNeverTriggerAgain};
+
+        if self.scheduled_for_removal {
+            // Ordered removed. Do not execute the timer's callback.
+            return WillNeverTriggerAgain;
+        }
+        if self.next_trigger > now {
+            // Not the time to trigger it yet.
+            return MightTriggerInTheFuture;
+        }
+
+        // Execute the callback:
+        if let Err(err) = self.trigger() {
+            error!("Error executing timer callback: {}", err);
+        }
+
+        if let Some(interval) = self.interval {
+            self.next_trigger = now + interval;
+            // It repeats. Keep it, unless removed from PAWN when it was triggered just now.
+            // Hopfully LLVM doesn't elide this check, but it could, given that we checked
+            // scheduled_for_removal earlier, .trigger() doesn't modify it, and Amx::exec
+            // is wrongly marked safe despite its potential for aliased references.
+            if self.scheduled_for_removal {
+                WillNeverTriggerAgain
+            } else {
+                MightTriggerInTheFuture
+            }
+        } else {
+            // Remove the timer. It got triggered and does not repeat
+            WillNeverTriggerAgain
+        }
     }
 }

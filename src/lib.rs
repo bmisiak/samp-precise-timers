@@ -1,4 +1,6 @@
-use log::{error, info};
+#![warn(clippy::pedantic)]
+use amx_arguments::VariadicAmxArguments;
+use log::info;
 use samp::amx::{Amx, AmxIdent};
 use samp::cell::AmxString;
 use samp::error::{AmxError, AmxResult};
@@ -6,8 +8,7 @@ use samp::plugin::SampPlugin;
 use slab::Slab;
 use std::convert::TryFrom;
 use std::time::{Duration, Instant};
-use timer::Timer;
-use amx_arguments::parse_variadic_arguments_passed_into_timer;
+use timer::{TimerStaus, Timer};
 
 mod amx_arguments;
 mod timer;
@@ -33,8 +34,7 @@ impl PreciseTimers {
                 .ok_or(AmxError::Params)?,
         );
         let repeat = args.next::<bool>().ok_or(AmxError::Params)?;
-        let passed_arguments =
-            parse_variadic_arguments_passed_into_timer(args).ok_or(AmxError::Params)?;
+        let passed_arguments = VariadicAmxArguments::from_amx_args(args, 3)?;
 
         // Find the callback by name and save its index
         let amx_callback_index = amx.find_public(&callback_name.to_string())?;
@@ -112,36 +112,13 @@ impl SampPlugin for PreciseTimers {
         // Slab::retain() -> Timer::trigger() -> PAWN callback/ffi which calls DeletePreciseTimer() -> Slab::remove.
         // That's why the DeletePreciseTimer() schedules timers for deletion instead of doing it right away.
         // Slab::retain() is, however, okay with inserting new timers during its execution, even in case of reallocation when over capacity.
-        self.timers.retain(|_key: usize, timer| {
-            if timer.next_trigger <= now {
-                if timer.scheduled_for_removal {
-                    // Remove timer and do not execute its callback.
-                    false
-                } else {
-                    // Execute the callback:
-                    if let Err(err) = timer.trigger() {
-                        error!("Error executing timer callback: {}", err);
-                    }
-
-                    if let Some(interval) = timer.interval {
-                        timer.next_trigger = now + interval;
-                        // It repeats. Keep it, unless removed by PAWN when it was triggered just now
-                        !timer.scheduled_for_removal
-                    } else {
-                        // Remove the timer. It got triggered and does not repeat
-                        false
-                    }
-                }
-            } else {
-                // Keep the timer, it has yet to be triggered
-                true
-            }
-        });
+        self.timers
+            .retain(|_key: usize, timer| timer.trigger_if_necessary(now) == TimerStaus::MightTriggerInTheFuture);
     }
 
     fn on_amx_unload(&mut self, unloaded_amx: &Amx) {
         self.timers
-            .retain(|_, timer| !timer.was_scheduled_by_amx(unloaded_amx))
+            .retain(|_, timer| !timer.was_scheduled_by_amx(unloaded_amx));
     }
 }
 
