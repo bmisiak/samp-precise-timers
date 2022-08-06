@@ -1,21 +1,21 @@
-use crate::amx_arguments::{PassedArgument, VariadicAmxArguments};
+use crate::amx_arguments::VariadicAmxArguments;
 use log::error;
 use samp::{
     amx::AmxIdent,
     error::AmxError,
-    prelude::{AmxResult, AmxString},
+    prelude::AmxResult,
 };
 use std::time::{Duration, Instant};
 
 #[derive(PartialEq)]
-pub enum TimerStaus {
+pub(crate) enum TimerStaus {
     MightTriggerInTheFuture,
     WillNeverTriggerAgain,
 }
 
 /// The Timer struct represents a single scheduled timer
 #[derive(Debug, Clone)]
-pub struct Timer {
+pub(crate) struct Timer {
     pub next_trigger: Instant,
     pub interval: Option<Duration>,
     pub passed_arguments: VariadicAmxArguments,
@@ -37,7 +37,7 @@ impl Timer {
 
         // Execute the callback (after pushing its arguments onto the stack)
         // Amx::exec should actually be marked unsafe in the samp-rs crate
-        self.passed_arguments.push_onto_amx_stack(amx, allocator)?;
+        self.passed_arguments.push_onto_amx_stack(amx, &allocator)?;
         amx.exec(self.amx_callback_index)?;
 
         Ok(())
@@ -46,7 +46,7 @@ impl Timer {
     /// Checks if it's time to trigger the timer yet. If so, triggers it.
     /// Returns info about whether the timer is okay to remove now
     #[inline(always)]
-    pub fn trigger_if_necessary(&mut self, now: Instant) -> TimerStaus {
+    pub fn trigger_if_due(&mut self, now: Instant) -> TimerStaus {
         use TimerStaus::{MightTriggerInTheFuture, WillNeverTriggerAgain};
 
         if self.scheduled_for_removal {

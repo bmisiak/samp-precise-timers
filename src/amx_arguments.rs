@@ -11,7 +11,7 @@ pub enum PassedArgument {
 }
 
 #[derive(Debug, Clone)]
-pub struct VariadicAmxArguments {
+pub(crate) struct VariadicAmxArguments {
     inner: Vec<PassedArgument>,
 }
 
@@ -28,7 +28,7 @@ impl VariadicAmxArguments {
         let type_letters = variadic_argument_types.to_bytes();
         let expected_variadic_args = type_letters.len();
         let received_variadic_args = args.count() - non_variadic_args;
-        
+
         if expected_variadic_args == received_variadic_args {
             Ok(type_letters)
         } else {
@@ -49,15 +49,15 @@ impl VariadicAmxArguments {
         skipped_args: usize,
     ) -> Result<VariadicAmxArguments, AmxError> {
         let type_letters = Self::get_type_letters(&mut args, skipped_args)?;
+        let mut type_letters_iter = type_letters.iter();
 
         let mut collected_arguments: Vec<PassedArgument> = Vec::with_capacity(type_letters.len());
-        let mut argument_type_letters = type_letters.iter();
 
-        while let Some(type_letter) = argument_type_letters.next() {
+        while let Some(type_letter) = type_letters_iter.next() {
             collected_arguments.push(match type_letter {
                 b's' => PassedArgument::Str(args.next::<AmxString>().ok_or(AmxError::Params)?.to_bytes()),
                 b'a' => {
-                    if let Some(b'i' | b'A') = argument_type_letters.next() {
+                    if let Some(b'i' | b'A') = type_letters_iter.next() {
                         let array_argument: samp::cell::UnsizedBuffer = args.next().ok_or(AmxError::Params)?;
                         let length_argument = args
                             .next::<i32>()
@@ -84,7 +84,7 @@ impl VariadicAmxArguments {
     pub fn push_onto_amx_stack(
         &self,
         amx: &samp::amx::Amx,
-        allocator: samp::amx::Allocator,
+        allocator: &samp::amx::Allocator,
     ) -> Result<(), AmxError> {
         for param in self.inner.iter().rev() {
             match param {
