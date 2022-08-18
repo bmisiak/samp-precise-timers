@@ -1,10 +1,6 @@
 use crate::amx_arguments::VariadicAmxArguments;
 use log::error;
-use samp::{
-    amx::AmxIdent,
-    error::AmxError,
-    prelude::AmxResult,
-};
+use samp::{amx::AmxIdent, error::AmxError, prelude::AmxResult};
 use std::time::{Duration, Instant};
 
 #[derive(PartialEq)]
