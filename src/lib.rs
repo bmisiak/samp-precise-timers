@@ -1,21 +1,30 @@
 #![warn(clippy::pedantic)]
 use amx_arguments::VariadicAmxArguments;
-use log::info;
+use log::{info, error};
+use priority_queue::PriorityQueue;
 use samp::amx::{Amx, AmxIdent};
 use samp::cell::AmxString;
 use samp::error::{AmxError, AmxResult};
 use samp::plugin::SampPlugin;
 use slab::Slab;
+use std::cmp::Reverse;
+use std::collections::hash_map::RandomState;
 use std::convert::TryFrom;
 use std::time::{Duration, Instant};
 use timer::{Timer, TimerStaus};
+use std::cell::RefCell;
 
 mod amx_arguments;
 mod timer;
 
+thread_local! {
+    pub static EXECUTING_TIMER: RefCell<Option<usize>> = RefCell::new(None);
+}
+
 /// The plugin and its data: a list of scheduled timers
 struct PreciseTimers {
     timers: Slab<Timer>,
+    queue: PriorityQueue<usize, Reverse<std::time::Instant>, RandomState>,
 }
 
 impl PreciseTimers {
@@ -38,9 +47,10 @@ impl PreciseTimers {
 
         // Find the callback by name and save its index
         let amx_callback_index = amx.find_public(&callback_name.to_string())?;
+        let next_trigger = Instant::now() + interval;
 
         let timer = Timer {
-            next_trigger: Instant::now() + interval,
+            next_trigger,
             interval: if repeat { Some(interval) } else { None },
             passed_arguments,
             amx_identifier: AmxIdent::from(amx.amx().as_ptr()),
@@ -50,6 +60,8 @@ impl PreciseTimers {
 
         // Add the timer to the list. This is safe for Slab::retain() even if SetPreciseTimer was called from a timer's callback.
         let key: usize = self.timers.insert(timer);
+        
+        self.queue.push(key, Reverse(next_trigger));
         // The timer's slot in Slab<> incresed by 1, so that 0 signifies an invalid timer in PAWN
         let timer_number = key
             .checked_add(1)
@@ -89,13 +101,15 @@ impl PreciseTimers {
         interval: i32,
         repeat: bool,
     ) -> AmxResult<i32> {
-        if let Some(timer) = self.timers.get_mut(timer_number - 1) {
+        let key = timer_number - 1;
+        if let Some(timer) = self.timers.get_mut(key) {
             let interval = u64::try_from(interval)
                 .map(Duration::from_millis)
                 .or(Err(AmxError::Params))?;
 
-            timer.next_trigger = Instant::now() + interval;
+            let next_trigger = Instant::now() + interval;
             timer.interval = if repeat { Some(interval) } else { None };
+            self.queue.change_priority(&key, Reverse(next_trigger));
             Ok(1)
         } else {
             Ok(0)
@@ -113,14 +127,46 @@ impl SampPlugin for PreciseTimers {
     fn process_tick(&mut self) {
         // Rust's Instant is monotonic and nondecreasing, even during NTP time adjustment.
         let now = Instant::now();
+        let timer_keys_to_execute = Vec::new();
 
         // 💀⚠ Because of FFI with C, Rust can't notice the simultaneous mutation of self.timers, but the iterator could get messed up in case of
         // Slab::retain() -> Timer::trigger() -> PAWN callback/ffi which calls DeletePreciseTimer() -> Slab::remove.
         // That's why the DeletePreciseTimer() schedules timers for deletion instead of doing it right away.
         // Slab::retain() is, however, okay with inserting new timers during its execution, even in case of reallocation when over capacity.
-        self.timers.retain(|_key: usize, timer| {
-            timer.trigger_if_due(now) == TimerStaus::MightTriggerInTheFuture
-        });
+        while let Some((&key, next_trigger)) = self.queue.peek() && next_trigger < now {
+            let timer = self.timers.get_mut(key).unwrap();
+            let interval = timer.interval;
+            // Execute the callback:
+            timer_keys_to_execute.push(key);
+
+            if let Some(interval) = interval {
+                let next_trigger = now + interval;
+                self.queue.change_priority(key, Reverse(next_trigger));
+            } else {
+                self.timers.remove(*key);
+                // the problem is, that damn callback might have injected a new timer
+                // to the very beginning of the queue. So we'd be popping the wrong one.
+                self.queue.pop().unwrap();
+            }
+        }
+
+        for key in timer_keys_to_execute {
+            let timer = self.timers.get_mut(key).unwrap();
+            if let Err(err) = timer.execute_pawn_callback() {
+                error!("Error executing timer callback: {}", err);
+            }
+        }
+        
+        loop {
+            {
+                let Some((key, &next_trigger)) = self.queue.peek() else {
+                    continue;
+                };
+                if next_trigger > now {
+                    continue;
+                }
+            }
+        }
     }
 
     fn on_amx_unload(&mut self, unloaded_amx: &Amx) {
@@ -149,7 +195,8 @@ samp::initialize_plugin!(
             .apply();
 
         PreciseTimers {
-            timers: Slab::with_capacity(1000)
+            timers: Slab::with_capacity(1000),
+            queue: PriorityQueue::with_capacity_and_default_hasher(1000),
         }
     }
 );
