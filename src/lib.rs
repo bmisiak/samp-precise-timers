@@ -20,7 +20,7 @@ thread_local! {
     static QUEUE: RefCell<PriorityQueue<usize, Reverse<TimerScheduling>, fnv::FnvBuildHasher>> = RefCell::new(PriorityQueue::with_capacity_and_default_hasher(1000));
 }
 
-/// The plugin and its data: a list of scheduled timers
+/// The plugin
 struct PreciseTimers;
 
 #[derive(Clone)]
@@ -160,7 +160,7 @@ impl PreciseTimers {
 
 impl SampPlugin for PreciseTimers {
     fn on_load(&mut self) {
-        info!("net4game.com/samp-precise-timers by Brian Misiak loaded correctly.");
+        info!("samp-precise-timers 3 by Brian Misiak loaded correctly.");
     }
 
     #[allow(clippy::inline_always)]
@@ -187,18 +187,17 @@ impl SampPlugin for PreciseTimers {
 
             if let (Some(interval), false) = (interval, execution_forbidden) {
                 let next_trigger = now + interval;
-                QUEUE
-                    .with_borrow_mut(|q| {
-                        q.change_priority(
-                            &key,
-                            Reverse(TimerScheduling {
-                                next_trigger,
-                                execution_forbidden,
-                                interval: Some(interval),
-                            }),
-                        )
-                    })
-                    .expect("failed to update scheduling of a repeating timer");
+                QUEUE.with_borrow_mut(|q| {
+                    q.change_priority(
+                        &key,
+                        Reverse(TimerScheduling {
+                            next_trigger,
+                            execution_forbidden,
+                            interval: Some(interval),
+                        }),
+                    )
+                    .expect("failed to reschedule repeating timer");
+                });
 
                 TIMERS.with_borrow_mut(|t| {
                     let timer = t.get_mut(key).expect("slab should contain repeating timer");
@@ -214,10 +213,7 @@ impl SampPlugin for PreciseTimers {
                 let (popped_key, _) = QUEUE
                     .with_borrow_mut(|q| q.pop())
                     .expect("priority queue should have at least the timer we peeked");
-                assert_eq!(
-                    popped_key, key,
-                    "timer popped from priority queue must match the peeked one"
-                );
+                assert_eq!(popped_key, key);
                 let mut removed_timer = TIMERS.with_borrow_mut(|t| t.remove(key));
 
                 if !execution_forbidden {
