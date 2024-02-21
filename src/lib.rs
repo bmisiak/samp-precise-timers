@@ -169,22 +169,7 @@ impl SampPlugin for PreciseTimers {
         // Rust's Instant is monotonic and nondecreasing, even during NTP time adjustment.
         let now = Instant::now();
 
-        loop {
-            let triggered_timer = QUEUE.with_borrow(|q| match q.peek() {
-                Some((
-                    &key,
-                    &Reverse(TimerScheduling {
-                        next_trigger,
-                        interval,
-                        execution_forbidden,
-                    }),
-                )) if next_trigger <= now => Some((key, interval, execution_forbidden)),
-                _ => None,
-            });
-            let Some((key, interval, execution_forbidden)) = triggered_timer else {
-                break;
-            };
-
+        while let Some((key, interval, execution_forbidden)) = next_triggered_timer(now) {
             if let (Some(interval), false) = (interval, execution_forbidden) {
                 let next_trigger = now + interval;
                 QUEUE.with_borrow_mut(|q| {
@@ -199,25 +184,33 @@ impl SampPlugin for PreciseTimers {
                     .expect("failed to reschedule repeating timer");
                 });
 
-                TIMERS.with_borrow_mut(|t| {
+                // Only holding onto TIMERS until we need to push the arguments
+                let (amx,idx) = TIMERS.with_borrow_mut(|t| {
                     let timer = t.get_mut(key).expect("slab should contain repeating timer");
-
-                    if let Err(err) = timer.execute_pawn_callback() {
-                        error!("Error executing repeating timer callback: {}", err);
-                    }
+                    let amx = samp::amx::get(timer.amx_identifier).expect("missing amx");
+                    timer.passed_arguments.push_onto_amx_stack(amx, &amx.allocator()).expect("failed to push args to amx");
+                    (amx, timer.amx_callback_index)
                 });
+                // Now that we let go of TIMERS and QUEUE,
+                // we can execute the callback. It can add new timers etc
+                if let Err(err) = amx.exec(idx) {
+                    error!("error executing repeating timer: {}", err);
+                }
             } else {
                 // Must pop before the timer is executed, so that
-                // it can't schedule anything as the very next timer before
+                // the callback can't schedule anything as the very next timer before
                 // we have a chance to pop from the queue.
                 let (popped_key, _) = QUEUE
                     .with_borrow_mut(|q| q.pop())
                     .expect("priority queue should have at least the timer we peeked");
                 assert_eq!(popped_key, key);
-                let mut removed_timer = TIMERS.with_borrow_mut(|t| t.remove(key));
-
+                // Remove from slab
+                let timer = TIMERS.with_borrow_mut(|t| t.remove(key));
+                // Only execute if not marked for deletion
                 if !execution_forbidden {
-                    if let Err(err) = removed_timer.execute_pawn_callback() {
+                    let amx = samp::amx::get(timer.amx_identifier).expect("missing amx");
+                    timer.passed_arguments.push_onto_amx_stack(amx, &amx.allocator()).expect("failed to push args to amx");
+                    if let Err(err) = amx.exec(timer.amx_callback_index) {
                         error!("Error executing non-repeating timer callback: {}", err);
                     }
                 }
@@ -241,6 +234,20 @@ impl SampPlugin for PreciseTimers {
             QUEUE.with_borrow_mut(|q| q.remove(&key));
         }
     }
+}
+
+fn next_triggered_timer(now: Instant) -> Option<(usize, Option<Duration>, bool)> {
+    QUEUE.with_borrow(|q| match q.peek() {
+        Some((
+            &key,
+            &Reverse(TimerScheduling {
+                next_trigger,
+                interval,
+                execution_forbidden,
+            }),
+        )) if next_trigger <= now => Some((key, interval, execution_forbidden)),
+        _ => None,
+    })
 }
 
 samp::initialize_plugin!(
