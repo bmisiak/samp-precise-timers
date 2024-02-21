@@ -146,11 +146,6 @@ impl PreciseTimers {
     }
 }
 
-enum TimerToBeExecuted {
-    Removed(Timer),
-    Retained(usize),
-}
-
 impl SampPlugin for PreciseTimers {
     fn on_load(&mut self) {
         info!("net4game.com/samp-precise-timers by Brian Misiak loaded correctly.");
