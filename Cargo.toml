@@ -16,6 +16,7 @@ slab = "0.4.2"
 log = "0.4.6"
 fern = "0.5.9"
 priority-queue = "1.3.0"
+once_cell = "1.19.0"
 
 [profile.release]
 lto = true

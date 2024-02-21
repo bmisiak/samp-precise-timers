@@ -1,6 +1,6 @@
 #![warn(clippy::pedantic)]
 use amx_arguments::VariadicAmxArguments;
-use log::{info, error};
+use log::{error, info};
 use priority_queue::PriorityQueue;
 use samp::amx::{Amx, AmxIdent};
 use samp::cell::AmxString;
@@ -11,15 +11,9 @@ use std::cmp::Reverse;
 use std::collections::hash_map::RandomState;
 use std::convert::TryFrom;
 use std::time::{Duration, Instant};
-use timer::{Timer, TimerStaus};
-use std::cell::RefCell;
-
+use timer::Timer;
 mod amx_arguments;
 mod timer;
-
-thread_local! {
-    pub static EXECUTING_TIMER: RefCell<Option<usize>> = RefCell::new(None);
-}
 
 /// The plugin and its data: a list of scheduled timers
 struct PreciseTimers {
@@ -50,7 +44,6 @@ impl PreciseTimers {
         let next_trigger = Instant::now() + interval;
 
         let timer = Timer {
-            next_trigger,
             interval: if repeat { Some(interval) } else { None },
             passed_arguments,
             amx_identifier: AmxIdent::from(amx.amx().as_ptr()),
@@ -60,7 +53,6 @@ impl PreciseTimers {
 
         // Add the timer to the list. This is safe for Slab::retain() even if SetPreciseTimer was called from a timer's callback.
         let key: usize = self.timers.insert(timer);
-        
         self.queue.push(key, Reverse(next_trigger));
         // The timer's slot in Slab<> incresed by 1, so that 0 signifies an invalid timer in PAWN
         let timer_number = key
@@ -127,51 +119,77 @@ impl SampPlugin for PreciseTimers {
     fn process_tick(&mut self) {
         // Rust's Instant is monotonic and nondecreasing, even during NTP time adjustment.
         let now = Instant::now();
-        let timer_keys_to_execute = Vec::new();
 
-        // 💀⚠ Because of FFI with C, Rust can't notice the simultaneous mutation of self.timers, but the iterator could get messed up in case of
-        // Slab::retain() -> Timer::trigger() -> PAWN callback/ffi which calls DeletePreciseTimer() -> Slab::remove.
-        // That's why the DeletePreciseTimer() schedules timers for deletion instead of doing it right away.
-        // Slab::retain() is, however, okay with inserting new timers during its execution, even in case of reallocation when over capacity.
-        while let Some((&key, next_trigger)) = self.queue.peek() && next_trigger < now {
-            let timer = self.timers.get_mut(key).unwrap();
-            let interval = timer.interval;
-            // Execute the callback:
-            timer_keys_to_execute.push(key);
+        let mut TRIGGERED_TIMERS = Vec::new();
 
-            if let Some(interval) = interval {
-                let next_trigger = now + interval;
-                self.queue.change_priority(key, Reverse(next_trigger));
-            } else {
-                self.timers.remove(*key);
-                // the problem is, that damn callback might have injected a new timer
-                // to the very beginning of the queue. So we'd be popping the wrong one.
-                self.queue.pop().unwrap();
-            }
-        }
-
-        for key in timer_keys_to_execute {
-            let timer = self.timers.get_mut(key).unwrap();
-            if let Err(err) = timer.execute_pawn_callback() {
-                error!("Error executing timer callback: {}", err);
-            }
-        }
-        
         loop {
-            {
-                let Some((key, &next_trigger)) = self.queue.peek() else {
-                    continue;
-                };
-                if next_trigger > now {
-                    continue;
+            let Some((&key, &Reverse(next_trigger))) = self.queue.peek() else {
+                break;
+            };
+            if next_trigger > now {
+                break;
+            }
+            let &Timer {
+                interval,
+                scheduled_for_removal,
+                ..
+            } = self
+                .timers
+                .get(key)
+                .expect("timer from priority queue should be present in slab");
+
+            if scheduled_for_removal {
+                self.timers.remove(key);
+                self.queue
+                    .pop()
+                    .expect("unable to pop the item we just peeked from priority queue");
+            } else {
+                // Schedule callback to be executed.
+                // If we executed it here, it might have injected a new timer
+                // to the very beginning of the queue. So we'd be popping the wrong one.
+                // That's why we only execute callbacks after gathering their list.
+                TRIGGERED_TIMERS.push(key);
+
+                if let Some(interval) = interval {
+                    let next_trigger = now + interval;
+                    self.queue.change_priority(&key, Reverse(next_trigger));
+                } else {
+                    self.timers.remove(key);
+                    self.queue
+                        .pop()
+                        .expect("unable to pop the item we just peeked from priority queue");
                 }
             }
         }
+
+        for &key in TRIGGERED_TIMERS.iter() {
+            if let Some(timer) = self.timers.get_mut(key) {
+                // if this deleted the next timer scheduled for execution,
+                // and immediately scheduled another one which receives the same key,
+                // we'd be executing the wrong itmer
+                if let Err(err) = timer.execute_pawn_callback() {
+                    error!("Error executing timer callback: {}", err);
+                }
+            } else {
+                error!("Timer {} was to be executed but is missing", key);
+            }
+        }
+        TRIGGERED_TIMERS.clear();
     }
 
     fn on_amx_unload(&mut self, unloaded_amx: &Amx) {
-        self.timers
-            .retain(|_, timer| !timer.was_scheduled_by_amx(unloaded_amx));
+        let mut removed_timers = Vec::new();
+        self.timers.retain(|key, timer| {
+            if timer.was_scheduled_by_amx(unloaded_amx) {
+                removed_timers.push(key);
+                false
+            } else {
+                true
+            }
+        });
+        for key in removed_timers {
+            self.queue.remove(&key);
+        }
     }
 }
 
