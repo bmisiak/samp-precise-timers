@@ -110,7 +110,7 @@ impl PreciseTimers {
 
 enum TimerToBeExecuted {
     Removed(Timer),
-    Remaining(usize),
+    Retained(usize),
 }
 
 impl SampPlugin for PreciseTimers {
@@ -145,7 +145,7 @@ impl SampPlugin for PreciseTimers {
             if let (Some(interval), false) = (interval, scheduled_for_removal) {
                 let next_trigger = now + interval;
                 self.queue.change_priority(&key, Reverse(next_trigger));
-                timers_to_be_executed.push(TimerToBeExecuted::Remaining(key));
+                timers_to_be_executed.push(TimerToBeExecuted::Retained(key));
             } else {
                 self.queue
                     .pop()
@@ -162,7 +162,7 @@ impl SampPlugin for PreciseTimers {
                         error!("Error executing removed timer callback: {}", err);
                     }
                 }
-                TimerToBeExecuted::Remaining(key) => {
+                TimerToBeExecuted::Retained(key) => {
                     let timer = self
                         .timers
                         .get_mut(key)
