@@ -1,6 +1,6 @@
 use crate::amx_arguments::VariadicAmxArguments;
 
-use samp::{amx::AmxIdent, error::AmxError, prelude::AmxResult};
+use samp::amx::AmxIdent;
 
 /// The Timer struct represents a single scheduled timer
 #[derive(Debug, Clone)]

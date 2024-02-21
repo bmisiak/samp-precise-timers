@@ -31,8 +31,6 @@ struct TimerScheduling {
     /// If Some, it's a repeating timer.
     /// If None, it will be gone after the next trigger.
     interval: Option<Duration>,
-    /// If true, the timer is marked for deletion
-    execution_forbidden: bool,
     /// The timer will be executed after this instant passes
     next_trigger: Instant,
 }
@@ -91,7 +89,6 @@ impl PreciseTimers {
                 Reverse(TimerScheduling {
                     next_trigger,
                     interval: if repeat { Some(interval) } else { None },
-                    execution_forbidden: false,
                 }),
             )
         });
@@ -112,14 +109,8 @@ impl PreciseTimers {
     #[samp::native(name = "DeletePreciseTimer")]
     pub fn delete(&mut self, _: &Amx, timer_number: usize) -> AmxResult<i32> {
         let key = timer_number - 1;
-        if QUEUE
-            .try_with(|q| {
-                q.borrow_mut().change_priority_by(&key, |scheduling| {
-                    scheduling.0.execution_forbidden = true;
-                })
-            })
-            .map_err(|_| AmxError::MemoryAccess)?
-        {
+        if let Ok(Some(_)) = QUEUE.with(|q| q.try_borrow_mut().map(|mut q| q.remove(&key))) {
+            TIMERS.with_borrow_mut(|t| t.remove(key));
             Ok(1)
         } else {
             Ok(0)
@@ -146,15 +137,17 @@ impl PreciseTimers {
 
         if QUEUE
             .try_with(|q| {
-                q.borrow_mut().change_priority(
-                    &key,
-                    Reverse(TimerScheduling {
-                        next_trigger: Instant::now() + interval,
-                        interval: if repeat { Some(interval) } else { None },
-                        execution_forbidden: false,
-                    }),
-                )
+                q.try_borrow_mut().map(|mut q| {
+                    q.change_priority(
+                        &key,
+                        Reverse(TimerScheduling {
+                            next_trigger: Instant::now() + interval,
+                            interval: if repeat { Some(interval) } else { None },
+                        }),
+                    )
+                })
             })
+            .map_err(|_| AmxError::MemoryAccess)?
             .map_err(|_| AmxError::MemoryAccess)?
             .is_some()
         {
@@ -176,49 +169,10 @@ impl SampPlugin for PreciseTimers {
         // Rust's Instant is monotonic and nondecreasing, even during NTP time adjustment.
         let now = Instant::now();
 
-        while let Some((key, interval, execution_forbidden)) = next_triggered_timer(now) {
-            if let (Some(interval), false) = (interval, execution_forbidden) {
-                let next_trigger = now + interval;
-                QUEUE.with_borrow_mut(|q| {
-                    q.change_priority(
-                        &key,
-                        Reverse(TimerScheduling {
-                            next_trigger,
-                            execution_forbidden,
-                            interval: Some(interval),
-                        }),
-                    )
-                    .expect("failed to reschedule repeating timer");
-                });
-
-                // Only holding onto TIMERS until we need to push the arguments
-                let (amx,idx) = TIMERS.with_borrow_mut(|t| {
-                    let timer = t.get_mut(key).expect("slab should contain repeating timer");
-                    let amx = samp::amx::get(timer.amx_identifier).expect("missing amx");
-                    timer.passed_arguments.push_onto_amx_stack(amx, &amx.allocator()).expect("failed to push args to amx");
-                    (amx, timer.amx_callback_index)
-                });
-                // Now that we let go of TIMERS and QUEUE,
-                // we can execute the callback. It can add new timers etc
-                if let Err(err) = amx.exec(idx) {
-                    error!("error executing repeating timer: {}", err);
-                }
-            } else {
-                // Must pop before the timer is executed, so that
-                // the callback can't schedule anything as the very next timer before
-                // we have a chance to pop from the queue.
-                let (popped_key, _) = QUEUE.with_borrow_mut(|q| q.pop().expect("peeked timer gone from queue"));
-                assert_eq!(popped_key, key);
-                // Remove from slab
-                let timer = TIMERS.with_borrow_mut(|t| t.remove(key));
-                // Only execute if not marked for deletion
-                if !execution_forbidden {
-                    let amx = samp::amx::get(timer.amx_identifier).expect("missing amx");
-                    timer.passed_arguments.push_onto_amx_stack(amx, &amx.allocator()).expect("failed to push args to amx");
-                    if let Err(err) = amx.exec(timer.amx_callback_index) {
-                        error!("Error executing non-repeating timer callback: {}", err);
-                    }
-                }
+        while let Some((key, interval)) = next_triggered_timer(now) {
+            let (amx, idx) = reschedule_and_put_timer_on_amx_stack(interval, now, key);
+            if let Err(err) = amx.exec(idx) {
+                error!("Error executing timer callback: {}", err);
             }
         }
     }
@@ -243,16 +197,63 @@ impl SampPlugin for PreciseTimers {
     }
 }
 
-fn next_triggered_timer(now: Instant) -> Option<(usize, Option<Duration>, bool)> {
+fn reschedule_and_put_timer_on_amx_stack(
+    interval: Option<Duration>,
+    now: Instant,
+    key: usize,
+) -> (&'static Amx, samp::consts::AmxExecIdx) {
+    if let Some(interval) = interval {
+        let next_trigger = now + interval;
+        QUEUE.with_borrow_mut(|q| {
+            q.change_priority(
+                &key,
+                Reverse(TimerScheduling {
+                    next_trigger,
+                    interval: Some(interval),
+                }),
+            )
+            .expect("failed to reschedule repeating timer");
+        });
+
+        TIMERS.with_borrow_mut(|t| {
+            let timer = t.get_mut(key).expect("slab should contain repeating timer");
+
+            put_timer_on_amx_stack(timer)
+        })
+    } else {
+        // Must pop before the timer is executed, so that
+        // the callback can't schedule anything as the very next timer before
+        // we have a chance to pop from the queue.
+        let (popped_key, _) = QUEUE.with_borrow_mut(
+            |q: &mut PriorityQueue<usize, Reverse<TimerScheduling>, _>| {
+                q.pop().expect("peeked timer poof'd")
+            },
+        );
+        assert_eq!(popped_key, key);
+        // Remove from slab
+        let mut timer = TIMERS.with_borrow_mut(|t| t.remove(key));
+        put_timer_on_amx_stack(&mut timer)
+    }
+}
+
+fn put_timer_on_amx_stack(timer: &mut Timer) -> (&'static Amx, samp::consts::AmxExecIdx) {
+    let amx: &'static Amx = samp::amx::get(timer.amx_identifier).expect("missing amx");
+    timer
+        .passed_arguments
+        .push_onto_amx_stack(amx)
+        .expect("failed to push args to amx");
+    (amx, timer.amx_callback_index)
+}
+
+fn next_triggered_timer(now: Instant) -> Option<(usize, Option<Duration>)> {
     QUEUE.with_borrow(|q| match q.peek() {
         Some((
             &key,
             &Reverse(TimerScheduling {
                 next_trigger,
                 interval,
-                execution_forbidden,
             }),
-        )) if next_trigger <= now => Some((key, interval, execution_forbidden)),
+        )) if next_trigger <= now => Some((key, interval)),
         _ => None,
     })
 }

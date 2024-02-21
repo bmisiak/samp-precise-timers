@@ -81,11 +81,8 @@ impl VariadicAmxArguments {
     }
 
     /// Push the arguments onto the AMX stack, in first-in-last-out order, i.e. reversed
-    pub fn push_onto_amx_stack(
-        &self,
-        amx: &samp::amx::Amx,
-        allocator: &samp::amx::Allocator,
-    ) -> Result<(), AmxError> {
+    pub fn push_onto_amx_stack(&self, amx: &samp::amx::Amx) -> Result<(), AmxError> {
+        let allocator = amx.allocator();
         for param in self.inner.iter().rev() {
             match param {
                 PassedArgument::PrimitiveCell(cell_value) => {
