@@ -7,6 +7,7 @@ use samp::cell::AmxString;
 use samp::error::{AmxError, AmxResult};
 use samp::plugin::SampPlugin;
 use slab::Slab;
+use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::convert::TryFrom;
 use std::time::{Duration, Instant};
@@ -14,11 +15,13 @@ use timer::Timer;
 mod amx_arguments;
 mod timer;
 
-/// The plugin and its data: a list of scheduled timers
-struct PreciseTimers {
-    timers: Slab<Timer>,
-    queue: PriorityQueue<usize, Reverse<TimerScheduling>, fnv::FnvBuildHasher>,
+thread_local! {
+    static TIMERS: RefCell<Slab<Timer>> = RefCell::new(Slab::with_capacity(1000));
+    static QUEUE: RefCell<PriorityQueue<usize, Reverse<TimerScheduling>, fnv::FnvBuildHasher>> = RefCell::new(PriorityQueue::with_capacity_and_default_hasher(1000));
 }
+
+/// The plugin and its data: a list of scheduled timers
+struct PreciseTimers;
 
 #[derive(Clone)]
 struct TimerScheduling {
@@ -74,15 +77,17 @@ impl PreciseTimers {
         };
 
         // Add the timer to the list. This is safe for Slab::retain() even if SetPreciseTimer was called from a timer's callback.
-        let key: usize = self.timers.insert(timer);
-        self.queue.push(
-            key,
-            Reverse(TimerScheduling {
-                next_trigger,
-                interval: if repeat { Some(interval) } else { None },
-                execution_forbidden: false,
-            }),
-        );
+        let key: usize = TIMERS.with_borrow_mut(|t| t.insert(timer));
+        QUEUE.with_borrow_mut(|q| {
+            q.push(
+                key,
+                Reverse(TimerScheduling {
+                    next_trigger,
+                    interval: if repeat { Some(interval) } else { None },
+                    execution_forbidden: false,
+                }),
+            )
+        });
         // The timer's slot in Slab<> incresed by 1, so that 0 signifies an invalid timer in PAWN
         let timer_number = key
             .checked_add(1)
@@ -100,9 +105,14 @@ impl PreciseTimers {
     #[samp::native(name = "DeletePreciseTimer")]
     pub fn delete(&mut self, _: &Amx, timer_number: usize) -> AmxResult<i32> {
         let key = timer_number - 1;
-        if self.queue.change_priority_by(&key, |scheduling| {
-            scheduling.0.execution_forbidden = true;
-        }) {
+        if QUEUE
+            .try_with(|q| {
+                q.borrow_mut().change_priority_by(&key, |scheduling| {
+                    scheduling.0.execution_forbidden = true;
+                })
+            })
+            .map_err(|_| AmxError::MemoryAccess)?
+        {
             Ok(1)
         } else {
             Ok(0)
@@ -127,16 +137,18 @@ impl PreciseTimers {
             .map(Duration::from_millis)
             .or(Err(AmxError::Params))?;
 
-        if self
-            .queue
-            .change_priority(
-                &key,
-                Reverse(TimerScheduling {
-                    next_trigger: Instant::now() + interval,
-                    interval: if repeat { Some(interval) } else { None },
-                    execution_forbidden: false,
-                }),
-            )
+        if QUEUE
+            .try_with(|q| {
+                q.borrow_mut().change_priority(
+                    &key,
+                    Reverse(TimerScheduling {
+                        next_trigger: Instant::now() + interval,
+                        interval: if repeat { Some(interval) } else { None },
+                        execution_forbidden: false,
+                    }),
+                )
+            })
+            .map_err(|_| AmxError::MemoryAccess)?
             .is_some()
         {
             Ok(1)
@@ -158,53 +170,55 @@ impl SampPlugin for PreciseTimers {
         let now = Instant::now();
 
         loop {
-            let (key, interval, execution_forbidden) = {
-                let Some((&key, &Reverse(ref scheduling))) = self.queue.peek() else {
-                    break;
-                };
-                if scheduling.next_trigger > now {
-                    break;
-                }
-                (
-                    key.clone(),
-                    scheduling.interval.clone(),
-                    scheduling.execution_forbidden.clone(),
-                )
+            let triggered_timer = QUEUE.with_borrow(|q| match q.peek() {
+                Some((
+                    &key,
+                    &Reverse(TimerScheduling {
+                        next_trigger,
+                        interval,
+                        execution_forbidden,
+                    }),
+                )) if next_trigger <= now => Some((key, interval, execution_forbidden)),
+                _ => None,
+            });
+            let Some((key, interval, execution_forbidden)) = triggered_timer else {
+                break;
             };
 
             if let (Some(interval), false) = (interval, execution_forbidden) {
                 let next_trigger = now + interval;
-                self.queue
-                    .change_priority(
-                        &key,
-                        Reverse(TimerScheduling {
-                            next_trigger,
-                            execution_forbidden,
-                            interval: Some(interval),
-                        }),
-                    )
+                QUEUE
+                    .with_borrow_mut(|q| {
+                        q.change_priority(
+                            &key,
+                            Reverse(TimerScheduling {
+                                next_trigger,
+                                execution_forbidden,
+                                interval: Some(interval),
+                            }),
+                        )
+                    })
                     .expect("failed to update scheduling of a repeating timer");
 
-                let timer = self
-                    .timers
-                    .get_mut(key)
-                    .expect("slab should contain repeating timer");
-                if let Err(err) = timer.execute_pawn_callback() {
-                    error!("Error executing repeating timer callback: {}", err);
-                }
+                TIMERS.with_borrow_mut(|t| {
+                    let timer = t.get_mut(key).expect("slab should contain repeating timer");
+
+                    if let Err(err) = timer.execute_pawn_callback() {
+                        error!("Error executing repeating timer callback: {}", err);
+                    }
+                });
             } else {
                 // Must pop before the timer is executed, so that
                 // it can't schedule anything as the very next timer before
                 // we have a chance to pop from the queue.
-                let (popped_key, _) = self
-                    .queue
-                    .pop()
+                let (popped_key, _) = QUEUE
+                    .with_borrow_mut(|q| q.pop())
                     .expect("priority queue should have at least the timer we peeked");
                 assert_eq!(
                     popped_key, key,
                     "timer popped from priority queue must match the peeked one"
                 );
-                let mut removed_timer = self.timers.remove(key);
+                let mut removed_timer = TIMERS.with_borrow_mut(|t| t.remove(key));
 
                 if !execution_forbidden {
                     if let Err(err) = removed_timer.execute_pawn_callback() {
@@ -217,16 +231,18 @@ impl SampPlugin for PreciseTimers {
 
     fn on_amx_unload(&mut self, unloaded_amx: &Amx) {
         let mut removed_timers = Vec::new();
-        self.timers.retain(|key, timer| {
-            if timer.was_scheduled_by_amx(unloaded_amx) {
-                removed_timers.push(key);
-                false
-            } else {
-                true
-            }
+        TIMERS.with_borrow_mut(|t| {
+            t.retain(|key, timer| {
+                if timer.was_scheduled_by_amx(unloaded_amx) {
+                    removed_timers.push(key);
+                    false
+                } else {
+                    true
+                }
+            })
         });
         for key in removed_timers {
-            self.queue.remove(&key);
+            QUEUE.with_borrow_mut(|q| q.remove(&key));
         }
     }
 }
@@ -250,9 +266,6 @@ samp::initialize_plugin!(
             .chain(samp_logger)
             .apply();
 
-        PreciseTimers {
-            timers: Slab::with_capacity(1000),
-            queue: PriorityQueue::with_capacity_and_default_hasher(1000),
-        }
+        PreciseTimers
     }
 );
