@@ -8,7 +8,6 @@ use samp::error::{AmxError, AmxResult};
 use samp::plugin::SampPlugin;
 use slab::Slab;
 use std::cmp::Reverse;
-use std::collections::hash_map::RandomState;
 use std::convert::TryFrom;
 use std::time::{Duration, Instant};
 use timer::Timer;
@@ -18,7 +17,7 @@ mod timer;
 /// The plugin and its data: a list of scheduled timers
 struct PreciseTimers {
     timers: Slab<Timer>,
-    queue: PriorityQueue<usize, Reverse<std::time::Instant>, RandomState>,
+    queue: PriorityQueue<usize, Reverse<std::time::Instant>, fnv::FnvBuildHasher>,
 }
 
 impl PreciseTimers {
