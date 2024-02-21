@@ -119,7 +119,7 @@ impl SampPlugin for PreciseTimers {
         // Rust's Instant is monotonic and nondecreasing, even during NTP time adjustment.
         let now = Instant::now();
 
-        let mut TRIGGERED_TIMERS = Vec::new();
+        let mut triggered_timers = Vec::new();
 
         loop {
             let Some((&key, &Reverse(next_trigger))) = self.queue.peek() else {
@@ -147,7 +147,7 @@ impl SampPlugin for PreciseTimers {
                 // If we executed it here, it might have injected a new timer
                 // to the very beginning of the queue. So we'd be popping the wrong one.
                 // That's why we only execute callbacks after gathering their list.
-                TRIGGERED_TIMERS.push(key);
+                triggered_timers.push(key);
 
                 if let Some(interval) = interval {
                     let next_trigger = now + interval;
@@ -161,7 +161,7 @@ impl SampPlugin for PreciseTimers {
             }
         }
 
-        for &key in &TRIGGERED_TIMERS {
+        for &key in &triggered_timers {
             if let Some(timer) = self.timers.get_mut(key) {
                 // if this deleted the next timer scheduled for execution,
                 // and immediately scheduled another one which receives the same key,
@@ -173,7 +173,7 @@ impl SampPlugin for PreciseTimers {
                 error!("Timer {} was to be executed but is missing", key);
             }
         }
-        TRIGGERED_TIMERS.clear();
+        triggered_timers.clear();
     }
 
     fn on_amx_unload(&mut self, unloaded_amx: &Amx) {

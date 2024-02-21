@@ -3,12 +3,6 @@ use crate::amx_arguments::VariadicAmxArguments;
 use samp::{amx::AmxIdent, error::AmxError, prelude::AmxResult};
 use std::time::Duration;
 
-#[derive(PartialEq)]
-pub(crate) enum TimerStaus {
-    MightTriggerInTheFuture,
-    WillNeverTriggerAgain,
-}
-
 /// The Timer struct represents a single scheduled timer
 #[derive(Debug, Clone)]
 pub(crate) struct Timer {
