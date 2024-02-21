@@ -167,7 +167,7 @@ impl PreciseTimers {
 
 impl SampPlugin for PreciseTimers {
     fn on_load(&mut self) {
-        info!("samp-precise-timers 3 by Brian Misiak loaded correctly.");
+        info!("samp-precise-timers v3 (c) Brian Misiak loaded correctly.");
     }
 
     #[allow(clippy::inline_always)]
