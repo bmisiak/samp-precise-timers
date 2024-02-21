@@ -1,7 +1,7 @@
 use crate::amx_arguments::VariadicAmxArguments;
-use log::error;
+
 use samp::{amx::AmxIdent, error::AmxError, prelude::AmxResult};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[derive(PartialEq)]
 pub(crate) enum TimerStaus {

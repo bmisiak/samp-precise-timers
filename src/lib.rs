@@ -161,7 +161,7 @@ impl SampPlugin for PreciseTimers {
             }
         }
 
-        for &key in TRIGGERED_TIMERS.iter() {
+        for &key in &TRIGGERED_TIMERS {
             if let Some(timer) = self.timers.get_mut(key) {
                 // if this deleted the next timer scheduled for execution,
                 // and immediately scheduled another one which receives the same key,
