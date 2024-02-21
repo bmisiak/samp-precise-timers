@@ -108,6 +108,11 @@ impl PreciseTimers {
     }
 }
 
+enum TimerToBeExecuted {
+    Removed(Timer),
+    Remaining(usize),
+}
+
 impl SampPlugin for PreciseTimers {
     fn on_load(&mut self) {
         info!("net4game.com/samp-precise-timers by Brian Misiak loaded correctly.");
@@ -119,7 +124,7 @@ impl SampPlugin for PreciseTimers {
         // Rust's Instant is monotonic and nondecreasing, even during NTP time adjustment.
         let now = Instant::now();
 
-        let mut triggered_timers = Vec::new();
+        let mut timers_to_be_executed = Vec::new();
 
         loop {
             let Some((&key, &Reverse(next_trigger))) = self.queue.peek() else {
@@ -129,51 +134,45 @@ impl SampPlugin for PreciseTimers {
                 break;
             }
             let &Timer {
-                interval,
                 scheduled_for_removal,
+                interval,
                 ..
             } = self
                 .timers
                 .get(key)
                 .expect("timer from priority queue should be present in slab");
 
-            if scheduled_for_removal {
-                self.timers.remove(key);
+            if let (Some(interval), false) = (interval, scheduled_for_removal) {
+                let next_trigger = now + interval;
+                self.queue.change_priority(&key, Reverse(next_trigger));
+                timers_to_be_executed.push(TimerToBeExecuted::Remaining(key));
+            } else {
                 self.queue
                     .pop()
-                    .expect("unable to pop the item we just peeked from priority queue");
-            } else {
-                // Schedule callback to be executed.
-                // If we executed it here, it might have injected a new timer
-                // to the very beginning of the queue. So we'd be popping the wrong one.
-                // That's why we only execute callbacks after gathering their list.
-                triggered_timers.push(key);
-
-                if let Some(interval) = interval {
-                    let next_trigger = now + interval;
-                    self.queue.change_priority(&key, Reverse(next_trigger));
-                } else {
-                    self.timers.remove(key);
-                    self.queue
-                        .pop()
-                        .expect("unable to pop the item we just peeked from priority queue");
-                }
+                    .expect("unable to pop the timer we just peeked from priority queue");
+                let timer = self.timers.remove(key);
+                timers_to_be_executed.push(TimerToBeExecuted::Removed(timer));
             }
         }
 
-        for &key in &triggered_timers {
-            if let Some(timer) = self.timers.get_mut(key) {
-                // if this deleted the next timer scheduled for execution,
-                // and immediately scheduled another one which receives the same key,
-                // we'd be executing the wrong itmer
-                if let Err(err) = timer.execute_pawn_callback() {
-                    error!("Error executing timer callback: {}", err);
+        for timer in timers_to_be_executed.into_iter() {
+            match timer {
+                TimerToBeExecuted::Removed(mut timer) => {
+                    if let Err(err) = timer.execute_pawn_callback() {
+                        error!("Error executing removed timer callback: {}", err);
+                    }
                 }
-            } else {
-                error!("Timer {} was to be executed but is missing", key);
+                TimerToBeExecuted::Remaining(key) => {
+                    let timer = self
+                        .timers
+                        .get_mut(key)
+                        .expect("failed to find timer in slab for execution");
+                    if let Err(err) = timer.execute_pawn_callback() {
+                        error!("Error executing timer callback: {}", err);
+                    }
+                }
             }
         }
-        triggered_timers.clear();
     }
 
     fn on_amx_unload(&mut self, unloaded_amx: &Amx) {
