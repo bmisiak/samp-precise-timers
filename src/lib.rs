@@ -17,7 +17,32 @@ mod timer;
 /// The plugin and its data: a list of scheduled timers
 struct PreciseTimers {
     timers: Slab<Timer>,
-    queue: PriorityQueue<usize, Reverse<std::time::Instant>, fnv::FnvBuildHasher>,
+    queue: PriorityQueue<usize, Reverse<TimerScheduling>, fnv::FnvBuildHasher>,
+}
+
+#[derive(Clone)]
+struct TimerScheduling {
+    interval: Option<Duration>,
+    execution_forbidden: bool,
+    next_trigger: Instant,
+}
+
+impl PartialEq for TimerScheduling {
+    fn eq(&self, other: &Self) -> bool {
+        self.next_trigger == other.next_trigger
+    }
+}
+impl Eq for TimerScheduling {}
+
+impl PartialOrd for TimerScheduling {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.next_trigger.partial_cmp(&other.next_trigger)
+    }
+}
+impl Ord for TimerScheduling {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.next_trigger.cmp(&other.next_trigger)
+    }
 }
 
 impl PreciseTimers {
@@ -43,16 +68,21 @@ impl PreciseTimers {
         let next_trigger = Instant::now() + interval;
 
         let timer = Timer {
-            interval: if repeat { Some(interval) } else { None },
             passed_arguments,
             amx_identifier: AmxIdent::from(amx.amx().as_ptr()),
             amx_callback_index,
-            scheduled_for_removal: false,
         };
 
         // Add the timer to the list. This is safe for Slab::retain() even if SetPreciseTimer was called from a timer's callback.
         let key: usize = self.timers.insert(timer);
-        self.queue.push(key, Reverse(next_trigger));
+        self.queue.push(
+            key,
+            Reverse(TimerScheduling {
+                next_trigger,
+                interval: if repeat { Some(interval) } else { None },
+                execution_forbidden: false,
+            }),
+        );
         // The timer's slot in Slab<> incresed by 1, so that 0 signifies an invalid timer in PAWN
         let timer_number = key
             .checked_add(1)
@@ -69,10 +99,10 @@ impl PreciseTimers {
     #[allow(clippy::unnecessary_wraps)]
     #[samp::native(name = "DeletePreciseTimer")]
     pub fn delete(&mut self, _: &Amx, timer_number: usize) -> AmxResult<i32> {
-        // Subtract 1 from the passed timer_number (where 0=invalid) to get the actual Slab<> slot
-        if let Some(timer) = self.timers.get_mut(timer_number - 1) {
-            // We defer the removal so that we don't mess up the process_tick()->retain() iterator.
-            timer.scheduled_for_removal = true;
+        let key = timer_number - 1;
+        if self.queue.change_priority_by(&key, |scheduling| {
+            scheduling.0.execution_forbidden = true;
+        }) {
             Ok(1)
         } else {
             Ok(0)
@@ -93,14 +123,22 @@ impl PreciseTimers {
         repeat: bool,
     ) -> AmxResult<i32> {
         let key = timer_number - 1;
-        if let Some(timer) = self.timers.get_mut(key) {
-            let interval = u64::try_from(interval)
-                .map(Duration::from_millis)
-                .or(Err(AmxError::Params))?;
+        let interval = u64::try_from(interval)
+            .map(Duration::from_millis)
+            .or(Err(AmxError::Params))?;
 
-            let next_trigger = Instant::now() + interval;
-            timer.interval = if repeat { Some(interval) } else { None };
-            self.queue.change_priority(&key, Reverse(next_trigger));
+        if self
+            .queue
+            .change_priority(
+                &key,
+                Reverse(TimerScheduling {
+                    next_trigger: Instant::now() + interval,
+                    interval: if repeat { Some(interval) } else { None },
+                    execution_forbidden: false,
+                }),
+            )
+            .is_some()
+        {
             Ok(1)
         } else {
             Ok(0)
@@ -124,51 +162,58 @@ impl SampPlugin for PreciseTimers {
         // Rust's Instant is monotonic and nondecreasing, even during NTP time adjustment.
         let now = Instant::now();
 
-        let mut timers_to_be_executed = Vec::new();
-
         loop {
-            let Some((&key, &Reverse(next_trigger))) = self.queue.peek() else {
-                break;
-            };
-            if next_trigger > now {
-                break;
-            }
-            let &Timer {
-                scheduled_for_removal,
-                interval,
-                ..
-            } = self
-                .timers
-                .get(key)
-                .expect("timer from priority queue should be present in slab");
-
-            if let (Some(interval), false) = (interval, scheduled_for_removal) {
-                let next_trigger = now + interval;
-                self.queue.change_priority(&key, Reverse(next_trigger));
-                timers_to_be_executed.push(TimerToBeExecuted::Retained(key));
-            } else {
-                self.queue
-                    .pop()
-                    .expect("unable to pop the timer we just peeked from priority queue");
-                let timer = self.timers.remove(key);
-                timers_to_be_executed.push(TimerToBeExecuted::Removed(timer));
-            }
-        }
-
-        for timer in timers_to_be_executed.into_iter() {
-            match timer {
-                TimerToBeExecuted::Removed(mut timer) => {
-                    if let Err(err) = timer.execute_pawn_callback() {
-                        error!("Error executing removed timer callback: {}", err);
-                    }
+            let (key, interval, execution_forbidden) = {
+                let Some((&key, &Reverse(ref scheduling))) = self.queue.peek() else {
+                    break;
+                };
+                if scheduling.next_trigger > now {
+                    break;
                 }
-                TimerToBeExecuted::Retained(key) => {
-                    let timer = self
-                        .timers
-                        .get_mut(key)
-                        .expect("failed to find timer in slab for execution");
-                    if let Err(err) = timer.execute_pawn_callback() {
-                        error!("Error executing timer callback: {}", err);
+                (
+                    key.clone(),
+                    scheduling.interval.clone(),
+                    scheduling.execution_forbidden.clone(),
+                )
+            };
+
+            if let (Some(interval), false) = (interval, execution_forbidden) {
+                let next_trigger = now + interval;
+                self.queue
+                    .change_priority(
+                        &key,
+                        Reverse(TimerScheduling {
+                            next_trigger,
+                            execution_forbidden,
+                            interval: Some(interval),
+                        }),
+                    )
+                    .expect("failed to update scheduling of a repeating timer");
+
+                let timer = self
+                    .timers
+                    .get_mut(key)
+                    .expect("slab should contain repeating timer");
+                if let Err(err) = timer.execute_pawn_callback() {
+                    error!("Error executing repeating timer callback: {}", err);
+                }
+            } else {
+                // Must pop before the timer is executed, so that
+                // it can't schedule anything as the very next timer before
+                // we have a chance to pop from the queue.
+                let (popped_key, _) = self
+                    .queue
+                    .pop()
+                    .expect("priority queue should have at least the timer we peeked");
+                assert_eq!(
+                    popped_key, key,
+                    "timer popped from priority queue must match the peeked one"
+                );
+                let mut removed_timer = self.timers.remove(key);
+
+                if !execution_forbidden {
+                    if let Err(err) = removed_timer.execute_pawn_callback() {
+                        error!("Error executing non-repeating timer callback: {}", err);
                     }
                 }
             }

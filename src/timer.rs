@@ -1,16 +1,13 @@
 use crate::amx_arguments::VariadicAmxArguments;
 
 use samp::{amx::AmxIdent, error::AmxError, prelude::AmxResult};
-use std::time::Duration;
 
 /// The Timer struct represents a single scheduled timer
 #[derive(Debug, Clone)]
 pub(crate) struct Timer {
-    pub interval: Option<Duration>,
     pub passed_arguments: VariadicAmxArguments,
     pub amx_identifier: AmxIdent,
     pub amx_callback_index: samp::consts::AmxExecIdx,
-    pub scheduled_for_removal: bool,
 }
 
 impl Timer {
