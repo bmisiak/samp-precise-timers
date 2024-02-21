@@ -16,17 +16,24 @@ mod amx_arguments;
 mod timer;
 
 thread_local! {
+    /// A slotmap of timers. Stable keys.
     static TIMERS: RefCell<Slab<Timer>> = RefCell::new(Slab::with_capacity(1000));
+    /// Always sorted queue of timers. Easy O(1) peeking and popping of the next scheduled timer.
     static QUEUE: RefCell<PriorityQueue<usize, Reverse<TimerScheduling>, fnv::FnvBuildHasher>> = RefCell::new(PriorityQueue::with_capacity_and_default_hasher(1000));
 }
 
 /// The plugin
 struct PreciseTimers;
 
+/// A struct defining when a timer gets triggered
 #[derive(Clone)]
 struct TimerScheduling {
+    /// If Some, it's a repeating timer.
+    /// If None, it will be gone after the next trigger.
     interval: Option<Duration>,
+    /// If true, the timer is marked for deletion
     execution_forbidden: bool,
+    /// The timer will be executed after this instant passes
     next_trigger: Instant,
 }
 
@@ -200,9 +207,7 @@ impl SampPlugin for PreciseTimers {
                 // Must pop before the timer is executed, so that
                 // the callback can't schedule anything as the very next timer before
                 // we have a chance to pop from the queue.
-                let (popped_key, _) = QUEUE
-                    .with_borrow_mut(|q| q.pop())
-                    .expect("priority queue should have at least the timer we peeked");
+                let (popped_key, _) = QUEUE.with_borrow_mut(|q| q.pop().expect("peeked timer gone from queue"));
                 assert_eq!(popped_key, key);
                 // Remove from slab
                 let timer = TIMERS.with_borrow_mut(|t| t.remove(key));
@@ -228,11 +233,13 @@ impl SampPlugin for PreciseTimers {
                 } else {
                     true
                 }
-            })
+            });
         });
-        for key in removed_timers {
-            QUEUE.with_borrow_mut(|q| q.remove(&key));
-        }
+        QUEUE.with_borrow_mut(|q| {
+            for key in removed_timers {
+                q.remove(&key);
+            }
+        });
     }
 }
 
