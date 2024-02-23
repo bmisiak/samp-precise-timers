@@ -1,5 +1,6 @@
 #![warn(clippy::pedantic)]
 use amx_arguments::VariadicAmxArguments;
+use fnv::FnvBuildHasher;
 use log::{error, info};
 use priority_queue::PriorityQueue;
 use samp::amx::{Amx, AmxIdent};
@@ -19,7 +20,7 @@ thread_local! {
     /// A slotmap of timers. Stable keys.
     static TIMERS: RefCell<Slab<Timer>> = RefCell::new(Slab::with_capacity(1000));
     /// Always sorted queue of timers. Easy O(1) peeking and popping of the next scheduled timer.
-    static QUEUE: RefCell<PriorityQueue<usize, Reverse<TimerScheduling>, fnv::FnvBuildHasher>> = RefCell::new(PriorityQueue::with_capacity_and_default_hasher(1000));
+    static QUEUE: RefCell<PriorityQueue<usize, Reverse<TimerScheduling>, FnvBuildHasher>> = RefCell::new(PriorityQueue::with_capacity_and_default_hasher(1000));
 }
 
 /// The plugin
@@ -170,8 +171,8 @@ impl SampPlugin for PreciseTimers {
         let now = Instant::now();
 
         while let Some((key, interval)) = next_triggered_timer(now) {
-            let (amx, idx) = reschedule_and_put_timer_on_amx_stack(interval, now, key);
-            if let Err(err) = amx.exec(idx) {
+            let callback = reschedule_and_put_timer_on_amx_stack(key, interval, now);
+            if let Err(err) = callback() {
                 error!("Error executing timer callback: {}", err);
             }
         }
@@ -198,11 +199,11 @@ impl SampPlugin for PreciseTimers {
 }
 
 fn reschedule_and_put_timer_on_amx_stack(
+    key: usize,
     interval: Option<Duration>,
     now: Instant,
-    key: usize,
-) -> (&'static Amx, samp::consts::AmxExecIdx) {
-    if let Some(interval) = interval {
+) -> impl FnOnce() -> Result<i32, AmxError> {
+    let (amx, callback_index) = if let Some(interval) = interval {
         let next_trigger = now + interval;
         QUEUE.with_borrow_mut(|q| {
             q.change_priority(
@@ -212,7 +213,6 @@ fn reschedule_and_put_timer_on_amx_stack(
                     interval: Some(interval),
                 }),
             )
-            .expect("failed to reschedule repeating timer");
         });
 
         TIMERS.with_borrow_mut(|t| {
@@ -224,16 +224,13 @@ fn reschedule_and_put_timer_on_amx_stack(
         // Must pop before the timer is executed, so that
         // the callback can't schedule anything as the very next timer before
         // we have a chance to pop from the queue.
-        let (popped_key, _) = QUEUE.with_borrow_mut(
-            |q: &mut PriorityQueue<usize, Reverse<TimerScheduling>, _>| {
-                q.pop().expect("peeked timer poof'd")
-            },
-        );
+        let (popped_key, _) = QUEUE.with_borrow_mut(|q| q.pop().expect("peeked timer poof'd"));
         assert_eq!(popped_key, key);
         // Remove from slab
         let mut timer = TIMERS.with_borrow_mut(|t| t.remove(key));
         put_timer_on_amx_stack(&mut timer)
-    }
+    };
+    move || amx.exec(callback_index)
 }
 
 fn put_timer_on_amx_stack(timer: &mut Timer) -> (&'static Amx, samp::consts::AmxExecIdx) {
