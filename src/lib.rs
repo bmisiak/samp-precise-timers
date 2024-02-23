@@ -5,6 +5,7 @@ use log::{error, info};
 use priority_queue::PriorityQueue;
 use samp::amx::{Amx, AmxIdent};
 use samp::cell::AmxString;
+use samp::consts::AmxExecIdx;
 use samp::error::{AmxError, AmxResult};
 use samp::plugin::SampPlugin;
 use slab::Slab;
@@ -158,6 +159,31 @@ impl PreciseTimers {
         }
     }
 }
+#[derive(Debug, thiserror::Error)]
+#[error("Error while executing timer number {}", timer_key+1)]
+struct TimerError {
+    source: TriggeringError,
+    timer_key: usize,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum TriggeringError {
+    #[error("Unable to execute callback")]
+    Callback {
+        #[from]
+        source: AmxError,
+    },
+    #[error("Unable to reschedule")]
+    Rescheduling,
+    #[error("Unable to deschedule")]
+    Descheduling,
+    #[error("Timer was expected to be present in slab")]
+    ExpectedInSlab,
+    #[error("The AMX which scheduled the timer disappeared")]
+    AmxGone,
+    #[error("Unable to push arguments onto AMX stack")]
+    StackPush { source: AmxError },
+}
 
 impl SampPlugin for PreciseTimers {
     fn on_load(&mut self) {
@@ -170,10 +196,16 @@ impl SampPlugin for PreciseTimers {
         // Rust's Instant is monotonic and nondecreasing, even during NTP time adjustment.
         let now = Instant::now();
 
-        while let Some((key, interval)) = next_triggered_timer(now) {
-            let callback = reschedule_and_put_timer_on_amx_stack(key, interval, now);
-            if let Err(err) = callback() {
-                error!("Error executing timer callback: {}", err);
+        while let Some((timer_key, interval)) = next_triggered_timer(now) {
+            match reschedule_and_prepare_callback(timer_key, interval, now)
+                .map_err(|source| TimerError { timer_key, source })
+            {
+                Ok(callback) => {
+                    if let Err(err) = callback() {
+                        error!("Callback error: {}", TriggeringError::from(err));
+                    }
+                }
+                Err(err) => error!(),
             }
         }
     }
@@ -198,11 +230,12 @@ impl SampPlugin for PreciseTimers {
     }
 }
 
-fn reschedule_and_put_timer_on_amx_stack(
+#[must_use]
+fn reschedule_and_prepare_callback(
     key: usize,
     interval: Option<Duration>,
     now: Instant,
-) -> impl FnOnce() -> Result<i32, AmxError> {
+) -> Result<impl FnOnce() -> Result<i32, AmxError>, TriggeringError> {
     let (amx, callback_index) = if let Some(interval) = interval {
         let next_trigger = now + interval;
         QUEUE.with_borrow_mut(|q| {
@@ -213,10 +246,11 @@ fn reschedule_and_put_timer_on_amx_stack(
                     interval: Some(interval),
                 }),
             )
-        });
+            .ok_or(TriggeringError::Rescheduling)
+        })?;
 
         TIMERS.with_borrow_mut(|t| {
-            let timer = t.get_mut(key).expect("slab should contain repeating timer");
+            let timer = t.get_mut(key).ok_or(TriggeringError::ExpectedInSlab)?;
 
             put_timer_on_amx_stack(timer)
         })
@@ -224,22 +258,22 @@ fn reschedule_and_put_timer_on_amx_stack(
         // Must pop before the timer is executed, so that
         // the callback can't schedule anything as the very next timer before
         // we have a chance to pop from the queue.
-        let (popped_key, _) = QUEUE.with_borrow_mut(|q| q.pop().expect("peeked timer poof'd"));
+        let (popped_key, _) =
+            QUEUE.with_borrow_mut(|q| q.pop().ok_or(TriggeringError::Descheduling))?;
         assert_eq!(popped_key, key);
-        // Remove from slab
-        let mut timer = TIMERS.with_borrow_mut(|t| t.remove(key));
-        put_timer_on_amx_stack(&mut timer)
-    };
-    move || amx.exec(callback_index)
+        let timer = TIMERS.with_borrow_mut(|t| t.remove(key));
+        put_timer_on_amx_stack(&timer)
+    }?;
+    Ok(move || amx.exec(callback_index))
 }
 
-fn put_timer_on_amx_stack(timer: &mut Timer) -> (&'static Amx, samp::consts::AmxExecIdx) {
-    let amx: &'static Amx = samp::amx::get(timer.amx_identifier).expect("missing amx");
+fn put_timer_on_amx_stack(timer: &Timer) -> Result<(&'static Amx, AmxExecIdx), TriggeringError> {
+    let amx: &'static Amx = samp::amx::get(timer.amx_identifier).ok_or(TriggeringError::AmxGone)?;
     timer
         .passed_arguments
         .push_onto_amx_stack(amx)
-        .expect("failed to push args to amx");
-    (amx, timer.amx_callback_index)
+        .map_err(|source| TriggeringError::StackPush { source })?;
+    Ok((amx, timer.amx_callback_index))
 }
 
 fn next_triggered_timer(now: Instant) -> Option<(usize, Option<Duration>)> {
