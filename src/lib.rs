@@ -5,55 +5,20 @@ use log::{error, info};
 use priority_queue::PriorityQueue;
 use samp::amx::{Amx, AmxIdent};
 use samp::cell::AmxString;
-use samp::consts::AmxExecIdx;
 use samp::error::{AmxError, AmxResult};
 use samp::plugin::SampPlugin;
 use slab::Slab;
-use std::cell::RefCell;
+use std::cell::{BorrowMutError, RefCell};
 use std::cmp::Reverse;
 use std::convert::TryFrom;
 use std::time::{Duration, Instant};
 use timer::Timer;
 mod amx_arguments;
 mod timer;
-
-thread_local! {
-    /// A slotmap of timers. Stable keys.
-    static TIMERS: RefCell<Slab<Timer>> = RefCell::new(Slab::with_capacity(1000));
-    /// Always sorted queue of timers. Easy O(1) peeking and popping of the next scheduled timer.
-    static QUEUE: RefCell<PriorityQueue<usize, Reverse<TimerScheduling>, FnvBuildHasher>> = RefCell::new(PriorityQueue::with_capacity_and_default_hasher(1000));
-}
-
+mod scheduling;
+use scheduling::*;
 /// The plugin
 struct PreciseTimers;
-
-/// A struct defining when a timer gets triggered
-#[derive(Clone)]
-struct TimerScheduling {
-    /// If Some, it's a repeating timer.
-    /// If None, it will be gone after the next trigger.
-    interval: Option<Duration>,
-    /// The timer will be executed after this instant passes
-    next_trigger: Instant,
-}
-
-impl PartialEq for TimerScheduling {
-    fn eq(&self, other: &Self) -> bool {
-        self.next_trigger == other.next_trigger
-    }
-}
-impl Eq for TimerScheduling {}
-
-impl PartialOrd for TimerScheduling {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.next_trigger.partial_cmp(&other.next_trigger)
-    }
-}
-impl Ord for TimerScheduling {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.next_trigger.cmp(&other.next_trigger)
-    }
-}
 
 impl PreciseTimers {
     /// This function is called from PAWN via the C foreign function interface.
@@ -77,23 +42,21 @@ impl PreciseTimers {
         let amx_callback_index = amx.find_public(&callback_name.to_string())?;
         let next_trigger = Instant::now() + interval;
 
-        let timer = Timer {
-            passed_arguments,
-            amx_identifier: AmxIdent::from(amx.amx().as_ptr()),
-            amx_callback_index,
-        };
-
-        // Add the timer to the list. This is safe for Slab::retain() even if SetPreciseTimer was called from a timer's callback.
-        let key: usize = TIMERS.with_borrow_mut(|t| t.insert(timer));
-        QUEUE.with_borrow_mut(|q| {
-            q.push(
-                key,
-                Reverse(TimerScheduling {
-                    next_trigger,
-                    interval: if repeat { Some(interval) } else { None },
-                }),
-            )
-        });
+        let key = insert_and_schedule_timer(
+            Timer {
+                passed_arguments,
+                amx_identifier: AmxIdent::from(amx.amx().as_ptr()),
+                amx_callback_index,
+            },
+            TimerScheduling {
+                next_trigger,
+                repeat: if repeat {
+                    Repeatability::Repeating(interval)
+                } else {
+                    Repeatability::NotRepeating
+                },
+            },
+        );
         // The timer's slot in Slab<> incresed by 1, so that 0 signifies an invalid timer in PAWN
         let timer_number = key
             .checked_add(1)
@@ -111,8 +74,7 @@ impl PreciseTimers {
     #[samp::native(name = "DeletePreciseTimer")]
     pub fn delete(&mut self, _: &Amx, timer_number: usize) -> AmxResult<i32> {
         let key = timer_number - 1;
-        if let Ok(Some(_)) = QUEUE.with(|q| q.try_borrow_mut().map(|mut q| q.remove(&key))) {
-            TIMERS.with_borrow_mut(|t| t.remove(key));
+        if let Some(_) = delete_timer(key).map_err(|_| AmxError::MemoryAccess)? {
             Ok(1)
         } else {
             Ok(0)
@@ -137,52 +99,42 @@ impl PreciseTimers {
             .map(Duration::from_millis)
             .or(Err(AmxError::Params))?;
 
-        if QUEUE
-            .try_with(|q| {
-                q.try_borrow_mut().map(|mut q| {
-                    q.change_priority(
-                        &key,
-                        Reverse(TimerScheduling {
-                            next_trigger: Instant::now() + interval,
-                            interval: if repeat { Some(interval) } else { None },
-                        }),
-                    )
-                })
-            })
-            .map_err(|_| AmxError::MemoryAccess)?
-            .map_err(|_| AmxError::MemoryAccess)?
-            .is_some()
-        {
-            Ok(1)
+        let result = if repeat {
+            reschedule_timer(key, Instant::now() + interval)
         } else {
+            deschedule_timer(key)
+        };
+
+        if let Err(error) = result {
+            error!("{}",error);
             Ok(0)
+        } else {
+            Ok(1)
         }
     }
 }
-#[derive(Debug, thiserror::Error)]
-#[error("Error while executing timer number {}", timer_key+1)]
+use snafu::{ResultExt, Snafu};
+#[derive(Debug, Snafu)]
+#[snafu(display("Error while executing timer number {}", timer_key+1))]
 struct TimerError {
     source: TriggeringError,
     timer_key: usize,
 }
 
-#[derive(Debug, thiserror::Error)]
-enum TriggeringError {
-    #[error("Unable to execute callback")]
-    Callback {
-        #[from]
-        source: AmxError,
-    },
-    #[error("Unable to reschedule")]
-    Rescheduling,
-    #[error("Unable to deschedule")]
-    Descheduling,
-    #[error("Timer was expected to be present in slab")]
-    ExpectedInSlab,
-    #[error("The AMX which scheduled the timer disappeared")]
-    AmxGone,
-    #[error("Unable to push arguments onto AMX stack")]
-    StackPush { source: AmxError },
+
+#[allow(clippy::inline_always)]
+#[inline(always)]
+pub(crate) fn trigger_due_timers() {
+    let now = Instant::now();
+
+    while let Some((timer_key, repeat)) = next_timer_due_for_triggering(now) {
+        if let Err(err) = start_triggering(timer_key, repeat, now)
+            .map(|callback| callback())
+            .context(TimerSnafu { timer_key })
+        {
+            error!("{}", err);
+        }
+    }
 }
 
 impl SampPlugin for PreciseTimers {
@@ -193,101 +145,14 @@ impl SampPlugin for PreciseTimers {
     #[allow(clippy::inline_always)]
     #[inline(always)]
     fn process_tick(&mut self) {
-        // Rust's Instant is monotonic and nondecreasing, even during NTP time adjustment.
-        let now = Instant::now();
-
-        while let Some((timer_key, interval)) = next_triggered_timer(now) {
-            match reschedule_and_prepare_callback(timer_key, interval, now)
-                .map_err(|source| TimerError { timer_key, source })
-            {
-                Ok(callback) => {
-                    if let Err(err) = callback() {
-                        error!("Callback error: {}", TriggeringError::from(err));
-                    }
-                }
-                Err(err) => error!(),
-            }
-        }
+        trigger_due_timers();
     }
 
     fn on_amx_unload(&mut self, unloaded_amx: &Amx) {
-        let mut removed_timers = Vec::new();
-        TIMERS.with_borrow_mut(|t| {
-            t.retain(|key, timer| {
-                if timer.was_scheduled_by_amx(unloaded_amx) {
-                    removed_timers.push(key);
-                    false
-                } else {
-                    true
-                }
-            });
-        });
-        QUEUE.with_borrow_mut(|q| {
-            for key in removed_timers {
-                q.remove(&key);
-            }
-        });
+        remove_timers_from_amx(unloaded_amx);
     }
 }
 
-#[must_use]
-fn reschedule_and_prepare_callback(
-    key: usize,
-    interval: Option<Duration>,
-    now: Instant,
-) -> Result<impl FnOnce() -> Result<i32, AmxError>, TriggeringError> {
-    let (amx, callback_index) = if let Some(interval) = interval {
-        let next_trigger = now + interval;
-        QUEUE.with_borrow_mut(|q| {
-            q.change_priority(
-                &key,
-                Reverse(TimerScheduling {
-                    next_trigger,
-                    interval: Some(interval),
-                }),
-            )
-            .ok_or(TriggeringError::Rescheduling)
-        })?;
-
-        TIMERS.with_borrow_mut(|t| {
-            let timer = t.get_mut(key).ok_or(TriggeringError::ExpectedInSlab)?;
-
-            put_timer_on_amx_stack(timer)
-        })
-    } else {
-        // Must pop before the timer is executed, so that
-        // the callback can't schedule anything as the very next timer before
-        // we have a chance to pop from the queue.
-        let (popped_key, _) =
-            QUEUE.with_borrow_mut(|q| q.pop().ok_or(TriggeringError::Descheduling))?;
-        assert_eq!(popped_key, key);
-        let timer = TIMERS.with_borrow_mut(|t| t.remove(key));
-        put_timer_on_amx_stack(&timer)
-    }?;
-    Ok(move || amx.exec(callback_index))
-}
-
-fn put_timer_on_amx_stack(timer: &Timer) -> Result<(&'static Amx, AmxExecIdx), TriggeringError> {
-    let amx: &'static Amx = samp::amx::get(timer.amx_identifier).ok_or(TriggeringError::AmxGone)?;
-    timer
-        .passed_arguments
-        .push_onto_amx_stack(amx)
-        .map_err(|source| TriggeringError::StackPush { source })?;
-    Ok((amx, timer.amx_callback_index))
-}
-
-fn next_triggered_timer(now: Instant) -> Option<(usize, Option<Duration>)> {
-    QUEUE.with_borrow(|q| match q.peek() {
-        Some((
-            &key,
-            &Reverse(TimerScheduling {
-                next_trigger,
-                interval,
-            }),
-        )) if next_trigger <= now => Some((key, interval)),
-        _ => None,
-    })
-}
 
 samp::initialize_plugin!(
     natives: [

@@ -1,13 +1,13 @@
 use crate::amx_arguments::VariadicAmxArguments;
 
-use samp::amx::AmxIdent;
+use samp::{amx::{Amx, AmxIdent}, consts::AmxExecIdx};
 
 /// The Timer struct represents a single scheduled timer
 #[derive(Debug, Clone)]
 pub(crate) struct Timer {
     pub passed_arguments: VariadicAmxArguments,
     pub amx_identifier: AmxIdent,
-    pub amx_callback_index: samp::consts::AmxExecIdx,
+    pub amx_callback_index: AmxExecIdx,
 }
 
 impl Timer {
