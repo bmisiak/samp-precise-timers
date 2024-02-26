@@ -30,6 +30,11 @@ pub(crate) struct VariadicAmxArguments {
 }
 
 impl VariadicAmxArguments {
+    #[cfg(test)]
+    pub fn empty() -> Self {
+        Self { inner: vec![] }
+    }
+
     fn get_type_letters(
         args: &mut samp::args::Args,
         skipped_args: usize,

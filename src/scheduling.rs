@@ -115,10 +115,7 @@ fn deschedule_next_due(next_due: &NextDue) -> Result<(), TriggeringError> {
     Ok(())
 }
 
-fn change_next_trigger(
-    key: usize,
-    next_trigger: Instant,
-) -> Result<(), TriggeringError> {
+fn change_next_trigger(key: usize, next_trigger: Instant) -> Result<(), TriggeringError> {
     QUEUE.with(|q| {
         q.try_borrow_mut()
             .context(ReschedulingBorrowSnafu)?
@@ -165,7 +162,7 @@ impl NextDue {
             change_next_trigger(self.key, next_trigger)?;
 
             TIMERS.with_borrow_mut(|t| {
-                let timer = t.get_mut(self.key).context(ExpectedInSlabSnafu)?;
+                let timer: &mut Timer = t.get_mut(self.key).context(ExpectedInSlabSnafu)?;
                 prep(timer).context(StackPushSnafu)
             })
         } else {
@@ -187,4 +184,39 @@ pub(crate) fn next_timer_due_for_triggering(now: Instant) -> Option<NextDue> {
         )) if next_trigger <= now => Some(NextDue { key, repeat }),
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod test {
+    use std::ptr::null_mut;
+
+    use samp::raw::types::AMX;
+
+    use crate::Timer;
+    use crate::{amx_arguments::VariadicAmxArguments, scheduling::next_timer_due_for_triggering};
+
+    use super::{insert_and_schedule_timer, TimerScheduling};
+
+    fn mock_no_arg_timer() -> Timer {
+        let amx_pointer: *mut AMX = null_mut();
+        Timer {
+            passed_arguments: VariadicAmxArguments::empty(),
+            amx_callback_index: samp::consts::AmxExecIdx::Continue,
+            amx_identifier: amx_pointer.into(),
+        }
+    }
+
+    #[test]
+    fn hello() {
+        insert_and_schedule_timer(
+            mock_no_arg_timer(),
+            TimerScheduling {
+                next_trigger: std::time::Instant::now(),
+                repeat: super::Repeat::DontRepeat,
+            },
+        );
+        let next_due = next_timer_due_for_triggering(std::time::Instant::now());
+        
+        assert!(next_due.is_some());
+    }
 }
