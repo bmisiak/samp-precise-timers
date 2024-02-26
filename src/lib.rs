@@ -1,22 +1,22 @@
 #![warn(clippy::pedantic)]
 use amx_arguments::VariadicAmxArguments;
-use fnv::FnvBuildHasher;
+
 use log::{error, info};
-use priority_queue::PriorityQueue;
+
 use samp::amx::{Amx, AmxIdent};
 use samp::cell::AmxString;
 use samp::error::{AmxError, AmxResult};
 use samp::plugin::SampPlugin;
-use slab::Slab;
-use std::cell::{BorrowMutError, RefCell};
-use std::cmp::Reverse;
+
+
+
 use std::convert::TryFrom;
 use std::time::{Duration, Instant};
 use timer::Timer;
 mod amx_arguments;
 mod timer;
 mod scheduling;
-use scheduling::*;
+use scheduling::{delete_timer, deschedule_timer, insert_and_schedule_timer, next_timer_due_for_triggering, remove_timers, reschedule_timer, start_triggering, Repeatability, StackedCallback, TimerScheduling, TriggeringError};
 /// The plugin
 struct PreciseTimers;
 
@@ -74,7 +74,7 @@ impl PreciseTimers {
     #[samp::native(name = "DeletePreciseTimer")]
     pub fn delete(&mut self, _: &Amx, timer_number: usize) -> AmxResult<i32> {
         let key = timer_number - 1;
-        if let Some(_) = delete_timer(key).map_err(|_| AmxError::MemoryAccess)? {
+        if (delete_timer(key).map_err(|_| AmxError::MemoryAccess)?).is_some() {
             Ok(1)
         } else {
             Ok(0)
@@ -128,13 +128,24 @@ pub(crate) fn trigger_due_timers() {
     let now = Instant::now();
 
     while let Some((timer_key, repeat)) = next_timer_due_for_triggering(now) {
-        if let Err(err) = start_triggering(timer_key, repeat, now)
-            .map(|callback| callback())
-            .context(TimerSnafu { timer_key })
-        {
-            error!("{}", err);
-        }
+        match start_triggering(timer_key, repeat, now, put_timer_on_amx_stack)
+                    .context(TimerSnafu { timer_key }) {
+            Ok(callback) => {
+                if let Err(err) = callback.execute() {
+                    error!("Error executing callback for timer {}: {}", timer_key+1, err);
+                }
+            }
+            Err(err) => error!("Error triggering timer {}: {}", timer_key+1, err),
+        } 
     }
+}
+
+pub(crate) fn put_timer_on_amx_stack(timer: &Timer) -> Result<StackedCallback, AmxError> {
+    let amx: &'static Amx = samp::amx::get(timer.amx_identifier).ok_or(AmxError::NotFound)?;
+    timer
+        .passed_arguments
+        .push_onto_amx_stack(amx)?;
+    Ok(StackedCallback{ amx, callback_idx: timer.amx_callback_index})
 }
 
 impl SampPlugin for PreciseTimers {
@@ -149,7 +160,7 @@ impl SampPlugin for PreciseTimers {
     }
 
     fn on_amx_unload(&mut self, unloaded_amx: &Amx) {
-        remove_timers_from_amx(unloaded_amx);
+        remove_timers(|timer| timer.was_scheduled_by_amx(unloaded_amx));
     }
 }
 

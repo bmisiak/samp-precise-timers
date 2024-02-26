@@ -40,7 +40,16 @@ pub(crate) enum TriggeringError {
 /// A callback which MUST be executed.
 /// Its args are already on the AMX stack.
 #[must_use]
-pub(crate) struct StackedCallbackData((&'static Amx, AmxExecIdx));
+pub(crate) struct StackedCallback {
+    pub amx: &'static Amx,
+    pub callback_idx: AmxExecIdx
+}
+
+impl StackedCallback {
+    pub fn execute(self) -> Result<i32, AmxError> {
+        self.amx.exec(self.callback_idx)
+    }
+}
 
 #[derive(Copy, Clone)]
 pub(crate) enum Repeatability {
@@ -93,11 +102,11 @@ pub(crate) fn delete_timer(timer_key: usize) -> Result<Option<Timer>, BorrowMutE
     })?))
 }
 
-pub(crate) fn remove_timers_from_amx(amx: &Amx) {
+pub(crate) fn remove_timers(predicate: impl Fn(&Timer) -> bool) {
     let mut removed_timers = Vec::new();
     TIMERS.with_borrow_mut(|t| {
         t.retain(|key, timer| {
-            if timer.was_scheduled_by_amx(amx) {
+            if predicate(timer) {
                 removed_timers.push(key);
                 false
             } else {
@@ -127,20 +136,11 @@ pub(crate) fn reschedule_timer(key: usize, next_trigger: Instant) -> Result<(), 
         q.try_borrow_mut()
             .context(ReschedulingBorrowSnafu)?
             .change_priority_by(&key, |Reverse(ref mut schedule)| {
-                (*schedule).next_trigger = next_trigger
+                schedule.next_trigger = next_trigger;
             })
             .then_some(())
             .ok_or(TriggeringError::Rescheduling)
     })
-}
-
-pub(crate) fn put_timer_on_amx_stack(timer: &Timer) -> Result<StackedCallbackData, TriggeringError> {
-    let amx: &'static Amx = samp::amx::get(timer.amx_identifier).context(AmxGoneSnafu)?;
-    timer
-        .passed_arguments
-        .push_onto_amx_stack(amx)
-        .context(StackPushSnafu)?;
-    Ok(StackedCallbackData((amx, timer.amx_callback_index)))
 }
 
 
@@ -153,36 +153,21 @@ pub(crate) fn start_triggering(
     timer_key: usize,
     repeat: Repeatability,
     now: Instant,
-) -> Result<impl FnOnce() -> Result<i32, TriggeringError>, TriggeringError> {
-    let StackedCallbackData((amx, callback_index)) = if let Repeatability::Repeating(interval) = repeat {
-        start_triggering_repeating_timer(timer_key, interval, now)
+    prep: impl Fn(&Timer) -> Result<StackedCallback, AmxError>,
+) -> Result<StackedCallback, TriggeringError> {
+    if let Repeatability::Repeating(interval) = repeat {
+        let next_trigger = now + interval;
+        reschedule_timer(timer_key, next_trigger)?;
+    
+        TIMERS.with_borrow_mut(|t| {
+            let timer = t.get_mut(timer_key).context(ExpectedInSlabSnafu)?;
+            prep(timer).context(StackPushSnafu)
+        })
     } else {
-        start_triggering_singular_timer(timer_key)
-    }?;
-    Ok(move || {
-        amx.exec(callback_index)
-            .context(CallbackSnafu { timer_key })
-    })
-}
-
-pub(crate) fn start_triggering_singular_timer(key: usize) -> Result<StackedCallbackData, TriggeringError> {
-    deschedule_next_timer_ensuring_key(key)?;
-    let timer = TIMERS.with_borrow_mut(|t| t.remove(key));
-    put_timer_on_amx_stack(&timer)
-}
-
-pub(crate) fn start_triggering_repeating_timer(
-    key: usize,
-    interval: Duration,
-    now: Instant,
-) -> Result<StackedCallbackData, TriggeringError> {
-    let next_trigger = now + interval;
-    reschedule_timer(key, next_trigger)?;
-
-    TIMERS.with_borrow_mut(|t| {
-        let timer = t.get_mut(key).context(ExpectedInSlabSnafu)?;
-        put_timer_on_amx_stack(timer)
-    })
+        deschedule_next_timer_ensuring_key(timer_key)?;
+        let timer = TIMERS.with_borrow_mut(|t| t.remove(timer_key));
+        prep(&timer).context(StackPushSnafu)
+    }
 }
 
 pub(crate) fn next_timer_due_for_triggering(now: Instant) -> Option<(usize, Repeatability)> {
