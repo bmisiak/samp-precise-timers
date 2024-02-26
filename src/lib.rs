@@ -16,8 +16,7 @@ mod amx_arguments;
 mod scheduling;
 mod timer;
 use scheduling::{
-    delete_timer, insert_and_schedule_timer, next_timer_due_for_triggering,
-    remove_timers,
+    delete_timer, insert_and_schedule_timer, next_timer_due_for_triggering, remove_timers,
     Repeat::{DontRepeat, Every},
     TimerScheduling, TriggeringError,
 };
@@ -46,7 +45,7 @@ impl PreciseTimers {
 
         let timer = Timer {
             passed_arguments,
-            amx_identifier: AmxIdent::from(amx.amx().as_ptr()),
+            amx_identifier: amx.amx().as_ptr().into(),
             amx_callback_index: amx.find_public(&callback_name.to_string())?,
         };
         let scheduling = TimerScheduling {
@@ -180,7 +179,8 @@ samp::initialize_plugin!(
 
         let _ = fern::Dispatch::new()
             .format(|callback, message, record| {
-                callback.finish(format_args!("samp-precise-timers {}: {}", record.level(), message));
+                let level = record.level();
+                callback.finish(format_args!("samp-precise-timers {level}: {message}"));
             })
             .chain(samp_logprintf)
             .apply();
