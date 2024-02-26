@@ -91,21 +91,17 @@ pub(crate) fn delete_timer(timer_key: usize) -> Result<Option<Timer>, BorrowMutE
 }
 
 pub(crate) fn remove_timers(predicate: impl Fn(&Timer) -> bool) {
-    let mut removed_timers = Vec::new();
-    TIMERS.with_borrow_mut(|t| {
-        t.retain(|key, timer| {
-            if predicate(timer) {
-                removed_timers.push(key);
-                false
-            } else {
-                true
-            }
+    TIMERS.with_borrow_mut(|timers| {
+        QUEUE.with_borrow_mut(|queue| {
+            timers.retain(|key, timer| {
+                if predicate(timer) {
+                    queue.remove(&key);
+                    false
+                } else {
+                    true
+                }
+            });
         });
-    });
-    QUEUE.with_borrow_mut(|q| {
-        for key in removed_timers {
-            q.remove(&key);
-        }
     });
 }
 
