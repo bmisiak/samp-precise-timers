@@ -1,5 +1,5 @@
 use log::error;
-use samp::{error::AmxError, prelude::AmxString};
+use samp::{amx::Amx, consts::AmxExecIdx, error::AmxError, prelude::AmxString};
 use std::convert::TryFrom;
 
 /// These are the types of arguments the plugin supports for passing on to the callback.
@@ -8,6 +8,20 @@ pub enum PassedArgument {
     PrimitiveCell(i32),
     Str(Vec<u8>),
     Array(Vec<i32>),
+}
+
+/// A callback which MUST be executed.
+/// Its args are already on the AMX stack.
+#[must_use]
+pub(crate) struct StackedCallback {
+    pub amx: &'static Amx,
+    pub callback_idx: AmxExecIdx,
+}
+
+impl StackedCallback {
+    pub fn execute(self) -> Result<i32, AmxError> {
+        self.amx.exec(self.callback_idx)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -81,7 +95,11 @@ impl VariadicAmxArguments {
     }
 
     /// Push the arguments onto the AMX stack, in first-in-last-out order, i.e. reversed
-    pub fn push_onto_amx_stack(&self, amx: &samp::amx::Amx) -> Result<(), AmxError> {
+    pub fn push_onto_amx_stack(
+        &self,
+        amx: &'static Amx,
+        callback_idx: AmxExecIdx,
+    ) -> Result<StackedCallback, AmxError> {
         let allocator = amx.allocator();
         for param in self.inner.iter().rev() {
             match param {
@@ -100,6 +118,6 @@ impl VariadicAmxArguments {
                 }
             }
         }
-        Ok(())
+        Ok(StackedCallback { amx, callback_idx })
     }
 }

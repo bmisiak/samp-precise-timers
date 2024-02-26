@@ -1,14 +1,16 @@
-
-use std::{cell::{BorrowMutError, RefCell}, cmp::Reverse, time::{Duration, Instant}};
+use std::{
+    cell::{BorrowMutError, RefCell},
+    cmp::Reverse,
+    time::{Duration, Instant},
+};
 
 use fnv::FnvBuildHasher;
 use priority_queue::PriorityQueue;
-use samp::{amx::Amx, consts::AmxExecIdx, error::AmxError};
+use samp::error::AmxError;
 use slab::Slab;
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
 
-use crate::timer::Timer;
-
+use crate::{amx_arguments::StackedCallback, timer::Timer};
 
 thread_local! {
     /// A slotmap of timers. Stable keys.
@@ -37,24 +39,10 @@ pub(crate) enum TriggeringError {
     StackPush { source: AmxError },
 }
 
-/// A callback which MUST be executed.
-/// Its args are already on the AMX stack.
-#[must_use]
-pub(crate) struct StackedCallback {
-    pub amx: &'static Amx,
-    pub callback_idx: AmxExecIdx
-}
-
-impl StackedCallback {
-    pub fn execute(self) -> Result<i32, AmxError> {
-        self.amx.exec(self.callback_idx)
-    }
-}
-
 #[derive(Copy, Clone)]
-pub(crate) enum Repeatability {
-    Repeating(Duration),
-    NotRepeating,
+pub(crate) enum Repeat {
+    Every(Duration),
+    DontRepeat,
 }
 
 /// A struct defining when a timer gets triggered
@@ -62,7 +50,7 @@ pub(crate) enum Repeatability {
 pub(crate) struct TimerScheduling {
     /// If Some, it's a repeating timer.
     /// If None, it will be gone after the next trigger.
-    pub repeat: Repeatability,
+    pub repeat: Repeat,
     /// The timer will be executed after this instant passes
     pub next_trigger: Instant,
 }
@@ -76,7 +64,7 @@ impl Eq for TimerScheduling {}
 
 impl PartialOrd for TimerScheduling {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.next_trigger.partial_cmp(&other.next_trigger)
+        Some(self.cmp(other))
     }
 }
 impl Ord for TimerScheduling {
@@ -125,9 +113,9 @@ pub(crate) fn deschedule_timer(key: usize) -> Result<(), TriggeringError> {
     QUEUE.with_borrow_mut(|q| q.remove(&key).map(|_| ()).context(DeschedulingSnafu))
 }
 
-pub(crate) fn deschedule_next_timer_ensuring_key(key: usize) -> Result<(), TriggeringError> {
+fn deschedule_next_due(next_due: &NextDue) -> Result<(), TriggeringError> {
     let (popped_key, _) = QUEUE.with_borrow_mut(|q| q.pop().context(DeschedulingSnafu))?;
-    ensure!(popped_key == key, InconsistencySnafu);
+    ensure!(popped_key == next_due.key, InconsistencySnafu);
     Ok(())
 }
 
@@ -143,34 +131,40 @@ pub(crate) fn reschedule_timer(key: usize, next_trigger: Instant) -> Result<(), 
     })
 }
 
+#[derive(Copy, Clone)]
+pub(crate) struct NextDue {
+    pub key: usize,
+    pub repeat: Repeat,
+}
 
-/// 1. Reschedules (or deschedules) the timer
-/// 2. prepares the AMX for execution of the callback
-///    by pushing arguments onto its stack
-/// 3. Frees TIMERS and QUEUE
-/// 4. Returns the callback.
-pub(crate) fn start_triggering(
-    timer_key: usize,
-    repeat: Repeatability,
-    now: Instant,
-    prep: impl Fn(&Timer) -> Result<StackedCallback, AmxError>,
-) -> Result<StackedCallback, TriggeringError> {
-    if let Repeatability::Repeating(interval) = repeat {
-        let next_trigger = now + interval;
-        reschedule_timer(timer_key, next_trigger)?;
-    
-        TIMERS.with_borrow_mut(|t| {
-            let timer = t.get_mut(timer_key).context(ExpectedInSlabSnafu)?;
-            prep(timer).context(StackPushSnafu)
-        })
-    } else {
-        deschedule_next_timer_ensuring_key(timer_key)?;
-        let timer = TIMERS.with_borrow_mut(|t| t.remove(timer_key));
-        prep(&timer).context(StackPushSnafu)
+impl NextDue {
+    /// 1. Reschedules (or deschedules) the timer
+    /// 2. While holding the timer, executes the closure
+    ///    which uses its data to push onto the amx stack
+    /// 3. Frees TIMERS and QUEUE.
+    /// 4. Returns the callback.
+    pub(crate) fn bump_schedule_and(
+        &self,
+        now: Instant,
+        prep: impl Fn(&Timer) -> Result<StackedCallback, AmxError>,
+    ) -> Result<StackedCallback, TriggeringError> {
+        if let Repeat::Every(interval) = self.repeat {
+            let next_trigger = now + interval;
+            reschedule_timer(self.key, next_trigger)?;
+
+            TIMERS.with_borrow_mut(|t| {
+                let timer = t.get_mut(self.key).context(ExpectedInSlabSnafu)?;
+                prep(timer).context(StackPushSnafu)
+            })
+        } else {
+            deschedule_next_due(self)?;
+            let timer = TIMERS.with_borrow_mut(|t| t.remove(self.key));
+            prep(&timer).context(StackPushSnafu)
+        }
     }
 }
 
-pub(crate) fn next_timer_due_for_triggering(now: Instant) -> Option<(usize, Repeatability)> {
+pub(crate) fn next_timer_due_for_triggering(now: Instant) -> Option<NextDue> {
     QUEUE.with_borrow(|q| match q.peek() {
         Some((
             &key,
@@ -178,7 +172,7 @@ pub(crate) fn next_timer_due_for_triggering(now: Instant) -> Option<(usize, Repe
                 next_trigger,
                 repeat,
             }),
-        )) if next_trigger <= now => Some((key, repeat)),
+        )) if next_trigger <= now => Some(NextDue { key, repeat }),
         _ => None,
     })
 }
