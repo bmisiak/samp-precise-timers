@@ -109,17 +109,16 @@ pub(crate) fn remove_timers(predicate: impl Fn(&Timer) -> bool) {
     });
 }
 
-pub(crate) fn deschedule_timer(key: usize) -> Result<(), TriggeringError> {
-    QUEUE.with_borrow_mut(|q| q.remove(&key).map(|_| ()).context(DeschedulingSnafu))
-}
-
 fn deschedule_next_due(next_due: &NextDue) -> Result<(), TriggeringError> {
     let (popped_key, _) = QUEUE.with_borrow_mut(|q| q.pop().context(DeschedulingSnafu))?;
     ensure!(popped_key == next_due.key, InconsistencySnafu);
     Ok(())
 }
 
-pub(crate) fn reschedule_timer(key: usize, next_trigger: Instant) -> Result<(), TriggeringError> {
+fn change_next_trigger(
+    key: usize,
+    next_trigger: Instant,
+) -> Result<(), TriggeringError> {
     QUEUE.with(|q| {
         q.try_borrow_mut()
             .context(ReschedulingBorrowSnafu)?
@@ -127,6 +126,19 @@ pub(crate) fn reschedule_timer(key: usize, next_trigger: Instant) -> Result<(), 
                 schedule.next_trigger = next_trigger;
             })
             .then_some(())
+            .ok_or(TriggeringError::Rescheduling)
+    })
+}
+
+pub(crate) fn reschedule_timer(
+    key: usize,
+    new_schedule: TimerScheduling,
+) -> Result<(), TriggeringError> {
+    QUEUE.with(|q| {
+        q.try_borrow_mut()
+            .context(ReschedulingBorrowSnafu)?
+            .change_priority(&key, Reverse(new_schedule))
+            .map(|_| ())
             .ok_or(TriggeringError::Rescheduling)
     })
 }
@@ -150,7 +162,7 @@ impl NextDue {
     ) -> Result<StackedCallback, TriggeringError> {
         if let Repeat::Every(interval) = self.repeat {
             let next_trigger = now + interval;
-            reschedule_timer(self.key, next_trigger)?;
+            change_next_trigger(self.key, next_trigger)?;
 
             TIMERS.with_borrow_mut(|t| {
                 let timer = t.get_mut(self.key).context(ExpectedInSlabSnafu)?;

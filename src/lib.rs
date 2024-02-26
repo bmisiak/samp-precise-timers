@@ -7,6 +7,7 @@ use samp::amx::{Amx, AmxIdent};
 use samp::cell::AmxString;
 use samp::error::{AmxError, AmxResult};
 use samp::plugin::SampPlugin;
+use scheduling::reschedule_timer;
 
 use std::convert::TryFrom;
 use std::time::{Duration, Instant};
@@ -15,8 +16,8 @@ mod amx_arguments;
 mod scheduling;
 mod timer;
 use scheduling::{
-    delete_timer, deschedule_timer, insert_and_schedule_timer, next_timer_due_for_triggering,
-    remove_timers, reschedule_timer,
+    delete_timer, insert_and_schedule_timer, next_timer_due_for_triggering,
+    remove_timers,
     Repeat::{DontRepeat, Every},
     TimerScheduling, TriggeringError,
 };
@@ -97,14 +98,16 @@ impl PreciseTimers {
             .map(Duration::from_millis)
             .or(Err(AmxError::Params))?;
 
-        let result = if repeat {
-            reschedule_timer(key, Instant::now() + interval)
-        } else {
-            deschedule_timer(key)
-        };
+        let result = reschedule_timer(
+            key,
+            TimerScheduling {
+                next_trigger: Instant::now() + interval,
+                repeat: if repeat { Every(interval) } else { DontRepeat },
+            },
+        );
 
         if let Err(error) = result {
-            error!("{}", error);
+            error!("{error}");
             Ok(0)
         } else {
             Ok(1)
@@ -173,14 +176,13 @@ samp::initialize_plugin!(
     {
         samp::plugin::enable_process_tick();
 
-        // get the default samp logger (uses samp logprintf).
-        let samp_logger = samp::plugin::logger().level(log::LevelFilter::Info); // logging info, warn and error messages
+        let samp_logprintf = samp::plugin::logger().level(log::LevelFilter::Info);
 
         let _ = fern::Dispatch::new()
             .format(|callback, message, record| {
-                callback.finish(format_args!("samp-precise-timers {}: {}", record.level().to_string().to_lowercase(), message));
+                callback.finish(format_args!("samp-precise-timers {}: {}", record.level(), message));
             })
-            .chain(samp_logger)
+            .chain(samp_logprintf)
             .apply();
 
         PreciseTimers
