@@ -105,12 +105,6 @@ pub(crate) fn remove_timers(predicate: impl Fn(&Timer) -> bool) {
     });
 }
 
-fn deschedule_next_due(next_due: &NextDue) -> Result<(), TriggeringError> {
-    let (popped_key, _) = QUEUE.with_borrow_mut(|q| q.pop().context(DeschedulingSnafu))?;
-    ensure!(popped_key == next_due.key, InconsistencySnafu);
-    Ok(())
-}
-
 fn change_next_trigger(key: usize, next_trigger: Instant) -> Result<(), TriggeringError> {
     QUEUE.with(|q| {
         q.try_borrow_mut()
@@ -162,13 +156,16 @@ impl NextDue {
                 prep(timer).context(StackPushSnafu)
             })
         } else {
-            deschedule_next_due(self)?;
+            let (descheduled, _) = QUEUE.with_borrow_mut(|q| q.pop().context(DeschedulingSnafu))?;
+            ensure!(descheduled == self.key, InconsistencySnafu);
+
             let timer = TIMERS.with_borrow_mut(|t| t.remove(self.key));
             prep(&timer).context(StackPushSnafu)
         }
     }
 }
 
+#[inline]
 pub(crate) fn next_timer_due_for_triggering(now: Instant) -> Option<NextDue> {
     QUEUE.with_borrow(|q| match q.peek() {
         Some((
@@ -212,7 +209,7 @@ mod test {
             },
         );
         let next_due = next_timer_due_for_triggering(std::time::Instant::now());
-        
+
         assert!(next_due.is_some());
     }
 }

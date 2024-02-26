@@ -11,10 +11,10 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-samp = { git = "https://github.com/ZOTTCE/samp-rs.git", rev = "2e9192713bf9a77ee04e0ebbcda37d078c9c47dd" }
+samp = { git = "https://github.com/bmisiak/samp-sdk.git", rev = "2a509721bc442724922076a4ae79b137708ca738" }
 slab = "0.4.2"
 log = "0.4.6"
-fern = "0.5.9"
+fern = { version = "0.6", features = [] }
 priority-queue = "1.3.0"
 once_cell = "1.19.0"
 fnv = "1.0.7"

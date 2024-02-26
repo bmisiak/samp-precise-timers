@@ -1,13 +1,13 @@
 #![warn(clippy::pedantic)]
-use amx_arguments::{StackedCallback, VariadicAmxArguments};
+use amx_arguments::VariadicAmxArguments;
 
 use log::{error, info};
 
-use samp::amx::{Amx, AmxIdent};
+use samp::amx::Amx;
 use samp::cell::AmxString;
 use samp::error::{AmxError, AmxResult};
 use samp::plugin::SampPlugin;
-use scheduling::reschedule_timer;
+use scheduling::{reschedule_timer, NextDue};
 
 use std::convert::TryFrom;
 use std::time::{Duration, Instant};
@@ -122,34 +122,6 @@ enum TimerError {
     Executing { source: AmxError, key: usize },
 }
 
-#[allow(clippy::inline_always)]
-#[inline(always)]
-pub(crate) fn trigger_due_timers() {
-    let now = Instant::now();
-
-    while let Some(due_timer) = next_timer_due_for_triggering(now) {
-        let key = due_timer.key;
-        match due_timer
-            .bump_schedule_and(now, get_stacked_callback)
-            .context(TriggeringSnafu { key })
-        {
-            Ok(callback) => {
-                if let Err(err) = callback.execute().context(ExecutingSnafu { key }) {
-                    error!("{err}");
-                }
-            }
-            Err(err) => error!("{err}"),
-        }
-    }
-}
-
-pub(crate) fn get_stacked_callback(timer: &Timer) -> Result<StackedCallback, AmxError> {
-    let amx: &'static Amx = samp::amx::get(timer.amx_identifier).ok_or(AmxError::NotFound)?;
-    timer
-        .passed_arguments
-        .push_onto_amx_stack(amx, timer.amx_callback_index)
-}
-
 impl SampPlugin for PreciseTimers {
     fn on_load(&mut self) {
         info!("samp-precise-timers v3 (c) Brian Misiak loaded correctly.");
@@ -158,7 +130,21 @@ impl SampPlugin for PreciseTimers {
     #[allow(clippy::inline_always)]
     #[inline(always)]
     fn process_tick(&mut self) {
-        trigger_due_timers();
+        let now = Instant::now();
+
+        while let Some(due @ NextDue { key, .. }) = next_timer_due_for_triggering(now) {
+            match due
+                .bump_schedule_and(now, Timer::stack_callback)
+                .context(TriggeringSnafu { key })
+            {
+                Ok(callback) => {
+                    if let Err(err) = callback.execute().context(ExecutingSnafu { key }) {
+                        error!("{err}");
+                    }
+                }
+                Err(err) => error!("{err}"),
+            }
+        }
     }
 
     fn on_amx_unload(&mut self, unloaded_amx: &Amx) {
@@ -178,9 +164,9 @@ samp::initialize_plugin!(
         let samp_logprintf = samp::plugin::logger().level(log::LevelFilter::Info);
 
         let _ = fern::Dispatch::new()
-            .format(|callback, message, record| {
+            .format(|out, message, record| {
                 let level = record.level();
-                callback.finish(format_args!("samp-precise-timers {level}: {message}"));
+                out.finish(format_args!("samp-precise-timers {level}: {message}"));
             })
             .chain(samp_logprintf)
             .apply();
