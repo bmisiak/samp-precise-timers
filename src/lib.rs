@@ -69,10 +69,7 @@ impl PreciseTimers {
     #[samp::native(name = "DeletePreciseTimer")]
     pub fn delete(&self, _: &Amx, timer_number: usize) -> AmxResult<i32> {
         let key = timer_number - 1;
-        if delete_timer(key)
-            .map_err(|_| AmxError::MemoryAccess)?
-            .is_some()
-        {
+        if delete_timer(key).is_ok() {
             Ok(1)
         } else {
             Ok(0)

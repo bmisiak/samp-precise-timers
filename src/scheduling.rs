@@ -54,15 +54,15 @@ pub(crate) fn insert_and_schedule_timer(
     Ok(key)
 }
 
-pub(crate) fn delete_timer(timer_key: usize) -> Result<Option<Timer>, BorrowMutError> {
-    let Some((removed_key, _)) =
-        QUEUE.with(|q| q.try_borrow_mut().map(|mut q| q.remove(&timer_key)))?
-    else {
-        return Ok(None);
-    };
-    Ok(Some(TIMERS.with(|t| {
-        t.try_borrow_mut().map(|mut t| t.remove(removed_key))
-    })?))
+pub(crate) fn delete_timer(timer_key: usize) -> Result<Timer, TriggeringError> {
+    let (removed_key, _) = QUEUE
+        .with(|q| q.try_borrow_mut().map(|mut q| q.remove(&timer_key)))
+        .context(QueueBorrowedSnafu)?
+        .context(TimerNotInQueueSnafu)?;
+
+    Ok(TIMERS
+        .with(|t| t.try_borrow_mut().map(|mut t| t.remove(removed_key)))
+        .context(QueueBorrowedSnafu)?)
 }
 
 pub(crate) fn reschedule_timer(key: usize, new_schedule: Schedule) -> Result<(), TriggeringError> {

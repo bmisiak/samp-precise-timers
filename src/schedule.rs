@@ -10,10 +10,7 @@ pub(crate) enum Repeat {
 /// A struct defining when a timer gets triggered
 #[derive(Copy, Clone)]
 pub(crate) struct Schedule {
-    /// If Some, it's a repeating timer.
-    /// If None, it will be gone after the next trigger.
     pub repeat: Repeat,
-    /// The timer will be executed after this instant passes
     pub next_trigger: Instant,
 }
 
