@@ -8,7 +8,7 @@ use fnv::FnvBuildHasher;
 use priority_queue::PriorityQueue;
 use samp::error::AmxError;
 use slab::Slab;
-use snafu::{ensure, OptionExt, ResultExt, Snafu};
+use snafu::{OptionExt, ResultExt, Snafu};
 
 use crate::{
     schedule::{Repeat, Schedule},
@@ -33,11 +33,7 @@ pub(crate) enum TriggeringError {
     #[snafu(display("Inserting timer failed, unable to access store"))]
     Inserting { source: BorrowMutError },
     #[snafu(display("Popped timer is different from the expected due timer"))]
-    Inconsistency,
-    #[snafu(display("Timer was expected to be present in slab"))]
     ExpectedInSlab,
-    #[snafu(display("The AMX which scheduled the timer disappeared"))]
-    AmxGone,
     #[snafu(display("Unable to push arguments onto AMX stack"))]
     StackPush { source: AmxError },
 }
@@ -104,13 +100,13 @@ pub(crate) fn remove_timers(predicate: impl Fn(&Timer) -> bool) {
 pub(crate) fn trigger_next_due_and_then<T>(
     now: Instant,
     timer_manipulator: impl Fn(&Timer) -> T,
-) -> Result<Option<T>, TriggeringError> {
+) -> Option<T> {
     QUEUE.with_borrow_mut(|q| {
         let Some((&key, &Reverse(scheduled))) = q.peek() else {
-            return Ok(None);
+            return None;
         };
         if scheduled.next_trigger > now {
-            return Ok(None);
+            return None;
         }
 
         if let Repeat::Every(interval) = scheduled.repeat {
@@ -118,15 +114,15 @@ pub(crate) fn trigger_next_due_and_then<T>(
                 schedule.next_trigger = now + interval;
             });
             TIMERS.with_borrow_mut(|t| {
-                let timer = t.get_mut(key).context(ExpectedInSlabSnafu)?;
-                Ok(Some(timer_manipulator(timer)))
+                let timer = t.get_mut(key).expect("should be in slab");
+                Some(timer_manipulator(timer))
             })
         } else {
-            let (descheduled, _) = q.pop().context(TimerNotInQueueSnafu)?;
-            ensure!(descheduled == key, InconsistencySnafu);
+            let (descheduled, _) = q.pop().expect("failed to pop due timer");
+            assert_eq!(descheduled, key);
 
             let timer = TIMERS.with_borrow_mut(|t| t.remove(key));
-            Ok(Some(timer_manipulator(&timer)))
+            Some(timer_manipulator(&timer))
         }
     })
 }

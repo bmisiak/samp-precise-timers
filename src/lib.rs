@@ -117,28 +117,26 @@ impl SampPlugin for PreciseTimers {
         info!("samp-precise-timers v3 (c) Brian Misiak loaded correctly.");
     }
 
+    fn on_amx_unload(&self, unloaded_amx: &Amx) {
+        remove_timers(|timer| timer.was_scheduled_by_amx(unloaded_amx));
+    }
+
     #[allow(clippy::inline_always)]
     #[inline(always)]
     fn process_tick(&self) {
         let now = Instant::now();
 
-        loop {
-            match trigger_next_due_and_then(now, Timer::stack_callback_on_amx) {
-                Ok(None) => break,
-                Ok(Some(Ok(callback))) => {
+        while let Some(callback) = trigger_next_due_and_then(now, Timer::stack_callback_on_amx) {
+            match callback {
+                Ok(callback) => {
                     // SAFETY: Must not hold any references to scheduling stores.
-                    if let Err(err) = unsafe { callback.execute() } {
-                        error!("Error while executing timer: {err}");
+                    if let Err(exec_err) = unsafe { callback.execute() } {
+                        error!("Error while executing timer: {exec_err}");
                     }
                 }
-                Ok(Some(Err(stacking_err))) => error!("Failed to stack callback: {stacking_err}"),
-                Err(triggering_err) => error!("Error triggering next timer: {triggering_err}"),
+                Err(stacking_err) => error!("Failed to stack callback: {stacking_err}"),
             }
         }
-    }
-
-    fn on_amx_unload(&self, unloaded_amx: &Amx) {
-        remove_timers(|timer| timer.was_scheduled_by_amx(unloaded_amx));
     }
 }
 
