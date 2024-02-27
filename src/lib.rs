@@ -7,19 +7,19 @@ use samp::amx::Amx;
 use samp::cell::AmxString;
 use samp::error::{AmxError, AmxResult};
 use samp::plugin::SampPlugin;
-use scheduling::{reschedule_timer, NextDue};
+use scheduling::{reschedule_timer, trigger_next_due_and_then};
 
 use std::convert::TryFrom;
 use std::time::{Duration, Instant};
 use timer::Timer;
 mod amx_arguments;
+mod schedule;
 mod scheduling;
 mod timer;
-use scheduling::{
-    delete_timer, insert_and_schedule_timer, next_timer_due_for_triggering, remove_timers,
-    Repeat::{DontRepeat, Every},
-    TimerScheduling, TriggeringError,
-};
+use schedule::Repeat::{DontRepeat, Every};
+use schedule::Schedule;
+use scheduling::{delete_timer, insert_and_schedule_timer, remove_timers};
+
 /// The plugin
 struct PreciseTimers;
 
@@ -48,11 +48,11 @@ impl PreciseTimers {
             amx_identifier: amx.amx().as_ptr().into(),
             amx_callback_index: amx.find_public(&callback_name.to_string())?,
         };
-        let scheduling = TimerScheduling {
+        let schedule = Schedule {
             next_trigger: Instant::now() + interval,
             repeat: if repeat { Every(interval) } else { DontRepeat },
         };
-        let key = insert_and_schedule_timer(timer, scheduling);
+        let key = insert_and_schedule_timer(timer, schedule);
         // The timer's slot in Slab<> incresed by 1, so that 0 signifies an invalid timer in PAWN
         let timer_number = key
             .checked_add(1)
@@ -94,32 +94,22 @@ impl PreciseTimers {
     ) -> AmxResult<i32> {
         let key = timer_number - 1;
         let interval = u64::try_from(interval)
-            .map(Duration::from_millis)
-            .or(Err(AmxError::Params))?;
+            .map_err(|_| AmxError::Params)
+            .map(Duration::from_millis)?;
 
-        let result = reschedule_timer(
+        if let Err(error) = reschedule_timer(
             key,
-            TimerScheduling {
+            Schedule {
                 next_trigger: Instant::now() + interval,
                 repeat: if repeat { Every(interval) } else { DontRepeat },
             },
-        );
-
-        if let Err(error) = result {
+        ) {
             error!("{error}");
             Ok(0)
         } else {
             Ok(1)
         }
     }
-}
-use snafu::{ResultExt, Snafu};
-#[derive(Debug, Snafu)]
-enum TimerError {
-    #[snafu(display("Error while triggering timer number {}", key+1))]
-    Triggering { source: TriggeringError, key: usize },
-    #[snafu(display("Error while executing callback for timer number {}", key+1))]
-    Executing { source: AmxError, key: usize },
 }
 
 impl SampPlugin for PreciseTimers {
@@ -132,17 +122,16 @@ impl SampPlugin for PreciseTimers {
     fn process_tick(&self) {
         let now = Instant::now();
 
-        while let Some(due @ NextDue { key, .. }) = next_timer_due_for_triggering(now) {
-            match due
-                .bump_schedule_and(now, Timer::stack_callback)
-                .context(TriggeringSnafu { key })
-            {
-                Ok(callback) => {
-                    if let Err(err) = callback.execute().context(ExecutingSnafu { key }) {
-                        error!("{err}");
+        loop {
+            match trigger_next_due_and_then(now, |timer| timer.stack_callback()) {
+                Ok(None) => break,
+                Ok(Some(callback)) => {
+                    // SAFETY: Must not hold any references to scheduling stores.
+                    if let Err(err) = unsafe { callback.execute() } {
+                        error!("Error while executing timer: {err}");
                     }
                 }
-                Err(err) => error!("{err}"),
+                Err(err) => error!("Error triggering next timer: {err}"),
             }
         }
     }

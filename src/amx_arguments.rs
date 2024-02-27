@@ -19,7 +19,14 @@ pub(crate) struct StackedCallback {
 }
 
 impl StackedCallback {
-    pub fn execute(self) -> Result<i32, AmxError> {
+    /// ### SAFETY:
+    /// The `amx.exec()` here might call one of our natives
+    /// such as `SetPreciseTimer` (`PreciseTimers::create`).
+    /// Those will try to acquire mutable access to
+    /// the scheduling store(s) e.g. `TIMERS` and `QUEUE`.
+    /// To avoid aliasing, there MUST NOT be any
+    /// active references to them when this is called.
+    pub unsafe fn execute(self) -> Result<i32, AmxError> {
         self.amx.exec(self.callback_idx)
     }
 }
