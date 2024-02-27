@@ -52,7 +52,7 @@ impl PreciseTimers {
             next_trigger: Instant::now() + interval,
             repeat: if repeat { Every(interval) } else { DontRepeat },
         };
-        let key = insert_and_schedule_timer(timer, schedule);
+        let key = insert_and_schedule_timer(timer, schedule).map_err(|_| AmxError::MemoryAccess)?;
         // The timer's slot in Slab<> incresed by 1, so that 0 signifies an invalid timer in PAWN
         let timer_number = key
             .checked_add(1)
@@ -123,15 +123,16 @@ impl SampPlugin for PreciseTimers {
         let now = Instant::now();
 
         loop {
-            match trigger_next_due_and_then(now, |timer| timer.stack_callback()) {
+            match trigger_next_due_and_then(now, Timer::stack_callback_on_amx) {
                 Ok(None) => break,
-                Ok(Some(callback)) => {
+                Ok(Some(Ok(callback))) => {
                     // SAFETY: Must not hold any references to scheduling stores.
                     if let Err(err) = unsafe { callback.execute() } {
                         error!("Error while executing timer: {err}");
                     }
                 }
-                Err(err) => error!("Error triggering next timer: {err}"),
+                Ok(Some(Err(stacking_err))) => error!("Failed to stack callback: {stacking_err}"),
+                Err(triggering_err) => error!("Error triggering next timer: {triggering_err}"),
             }
         }
     }

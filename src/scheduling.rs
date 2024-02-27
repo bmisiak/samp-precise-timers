@@ -29,7 +29,9 @@ pub(crate) enum TriggeringError {
     #[snafu(display("Unable to find timer in priority queue"))]
     TimerNotInQueue,
     #[snafu(display("Failed to get access to priority queue"))]
-    ReschedulingBorrow { source: BorrowMutError },
+    QueueBorrowed { source: BorrowMutError },
+    #[snafu(display("Inserting timer failed, unable to access store"))]
+    Inserting { source: BorrowMutError },
     #[snafu(display("Popped timer is different from the expected due timer"))]
     Inconsistency,
     #[snafu(display("Timer was expected to be present in slab"))]
@@ -40,10 +42,20 @@ pub(crate) enum TriggeringError {
     StackPush { source: AmxError },
 }
 
-pub(crate) fn insert_and_schedule_timer(timer: Timer, scheduling: Schedule) -> usize {
-    let key: usize = TIMERS.with_borrow_mut(|t| t.insert(timer));
-    QUEUE.with_borrow_mut(|q| q.push(key, Reverse(scheduling)));
-    key
+pub(crate) fn insert_and_schedule_timer(
+    timer: Timer,
+    scheduling: Schedule,
+) -> Result<usize, TriggeringError> {
+    let key: usize = TIMERS
+        .with(|t| t.try_borrow_mut().map(|mut t| t.insert(timer)))
+        .context(InsertingSnafu)?;
+    QUEUE
+        .with(|q| {
+            q.try_borrow_mut()
+                .map(|mut q| q.push(key, Reverse(scheduling)))
+        })
+        .context(InsertingSnafu)?;
+    Ok(key)
 }
 
 pub(crate) fn delete_timer(timer_key: usize) -> Result<Option<Timer>, BorrowMutError> {
@@ -55,6 +67,16 @@ pub(crate) fn delete_timer(timer_key: usize) -> Result<Option<Timer>, BorrowMutE
     Ok(Some(TIMERS.with(|t| {
         t.try_borrow_mut().map(|mut t| t.remove(removed_key))
     })?))
+}
+
+pub(crate) fn reschedule_timer(key: usize, new_schedule: Schedule) -> Result<(), TriggeringError> {
+    QUEUE.with(|q| {
+        q.try_borrow_mut()
+            .context(QueueBorrowedSnafu)?
+            .change_priority(&key, Reverse(new_schedule))
+            .map(|_| ())
+            .context(TimerNotInQueueSnafu)
+    })
 }
 
 pub(crate) fn remove_timers(predicate: impl Fn(&Timer) -> bool) {
@@ -72,16 +94,6 @@ pub(crate) fn remove_timers(predicate: impl Fn(&Timer) -> bool) {
     });
 }
 
-pub(crate) fn reschedule_timer(key: usize, new_schedule: Schedule) -> Result<(), TriggeringError> {
-    QUEUE.with(|q| {
-        q.try_borrow_mut()
-            .context(ReschedulingBorrowSnafu)?
-            .change_priority(&key, Reverse(new_schedule))
-            .map(|_| ())
-            .context(TimerNotInQueueSnafu)
-    })
-}
-
 /// 1. Reschedules (or deschedules) the timer
 /// 2. While holding the timer, gives it to the closure
 ///    (which uses its data to push onto the amx stack)
@@ -91,7 +103,7 @@ pub(crate) fn reschedule_timer(key: usize, new_schedule: Schedule) -> Result<(),
 #[inline]
 pub(crate) fn trigger_next_due_and_then<T>(
     now: Instant,
-    prep: impl Fn(&Timer) -> Result<T, AmxError>,
+    timer_manipulator: impl Fn(&Timer) -> T,
 ) -> Result<Option<T>, TriggeringError> {
     QUEUE.with_borrow_mut(|q| {
         let Some((&key, &Reverse(scheduled))) = q.peek() else {
@@ -107,14 +119,14 @@ pub(crate) fn trigger_next_due_and_then<T>(
             });
             TIMERS.with_borrow_mut(|t| {
                 let timer = t.get_mut(key).context(ExpectedInSlabSnafu)?;
-                Ok(Some(prep(timer).context(StackPushSnafu)?))
+                Ok(Some(timer_manipulator(timer)))
             })
         } else {
             let (descheduled, _) = q.pop().context(TimerNotInQueueSnafu)?;
             ensure!(descheduled == key, InconsistencySnafu);
 
             let timer = TIMERS.with_borrow_mut(|t| t.remove(key));
-            Ok(Some(prep(&timer).context(StackPushSnafu)?))
+            Ok(Some(timer_manipulator(&timer)))
         }
     })
 }
