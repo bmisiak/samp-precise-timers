@@ -123,13 +123,13 @@ enum TimerError {
 }
 
 impl SampPlugin for PreciseTimers {
-    fn on_load(&mut self) {
+    fn on_load(&self) {
         info!("samp-precise-timers v3 (c) Brian Misiak loaded correctly.");
     }
 
     #[allow(clippy::inline_always)]
     #[inline(always)]
-    fn process_tick(&mut self) {
+    fn process_tick(&self) {
         let now = Instant::now();
 
         while let Some(due @ NextDue { key, .. }) = next_timer_due_for_triggering(now) {
@@ -147,7 +147,7 @@ impl SampPlugin for PreciseTimers {
         }
     }
 
-    fn on_amx_unload(&mut self, unloaded_amx: &Amx) {
+    fn on_amx_unload(&self, unloaded_amx: &Amx) {
         remove_timers(|timer| timer.was_scheduled_by_amx(unloaded_amx));
     }
 }
