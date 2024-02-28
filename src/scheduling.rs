@@ -114,11 +114,11 @@ pub(crate) fn trigger_next_due_and_then<T>(
                 schedule.next_trigger = now + interval;
             });
             TIMERS.with_borrow_mut(|t| {
-                let timer = t.get_mut(key).expect("should be in slab");
+                let timer = t.get_mut(key).expect("due timer should be in slab");
                 Some(timer_manipulator(timer))
             })
         } else {
-            let (descheduled, _) = q.pop().expect("failed to pop due timer");
+            let (descheduled, _) = q.pop().expect("due timer should be in queue");
             assert_eq!(descheduled, key);
 
             let timer = TIMERS.with_borrow_mut(|t| t.remove(key));
@@ -156,9 +156,9 @@ mod test {
                 next_trigger: std::time::Instant::now(),
                 repeat: Repeat::DontRepeat,
             },
-        );
-        let callback =
-            trigger_next_due_and_then(std::time::Instant::now(), |_timer| Ok(())).unwrap();
+        )
+        .unwrap();
+        let callback = trigger_next_due_and_then(std::time::Instant::now(), |_timer| ());
         assert!(callback.is_some());
     }
 }

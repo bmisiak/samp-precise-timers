@@ -126,7 +126,7 @@ impl SampPlugin for PreciseTimers {
         while let Some(callback) = trigger_next_due_and_then(now, Timer::stack_callback_on_amx) {
             match callback {
                 Ok(callback) => {
-                    // SAFETY: Must not hold any references to scheduling stores.
+                    // SAFETY: We are not holding any references to scheduling stores.
                     if let Err(exec_err) = unsafe { callback.execute() } {
                         error!("Error while executing timer: {exec_err}");
                     }
