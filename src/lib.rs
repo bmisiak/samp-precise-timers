@@ -48,11 +48,12 @@ impl PreciseTimers {
             amx_identifier: amx.amx().as_ptr().into(),
             amx_callback_index: amx.find_public(&callback_name.to_string())?,
         };
-        let schedule = Schedule {
+        let key = insert_and_schedule_timer(timer, |key| Schedule {
+            key,
             next_trigger: Instant::now() + interval,
             repeat: if repeat { Every(interval) } else { DontRepeat },
-        };
-        let key = insert_and_schedule_timer(timer, schedule).map_err(|_| AmxError::MemoryAccess)?;
+        })
+        .map_err(|_| AmxError::MemoryAccess)?;
         // The timer's slot in Slab<> incresed by 1, so that 0 signifies an invalid timer in PAWN
         let timer_number = key
             .checked_add(1)
@@ -97,6 +98,7 @@ impl PreciseTimers {
         if let Err(error) = reschedule_timer(
             key,
             Schedule {
+                key,
                 next_trigger: Instant::now() + interval,
                 repeat: if repeat { Every(interval) } else { DontRepeat },
             },

@@ -1,11 +1,9 @@
 use std::{
     cell::{BorrowMutError, RefCell},
-    cmp::Reverse,
     time::Instant,
 };
 
-use fnv::FnvBuildHasher;
-use priority_queue::PriorityQueue;
+use fnv::FnvHashSet;
 use samp::error::AmxError;
 use slab::Slab;
 use snafu::{OptionExt, ResultExt, Snafu};
@@ -19,7 +17,7 @@ thread_local! {
     /// A slotmap of timers. Stable keys.
     static TIMERS: RefCell<Slab<Timer>> = RefCell::new(Slab::with_capacity(1000));
     /// Always sorted queue of timers. Easy O(1) peeking and popping of the next scheduled timer.
-    static QUEUE: RefCell<PriorityQueue<usize, Reverse<Schedule>, FnvBuildHasher>> = RefCell::new(PriorityQueue::with_capacity_and_default_hasher(1000));
+    static QUEUE: RefCell<Vec<Schedule>> = RefCell::new(Vec::with_capacity(1000));
 }
 
 #[derive(Debug, Snafu)]
@@ -40,53 +38,76 @@ pub(crate) enum TriggeringError {
 
 pub(crate) fn insert_and_schedule_timer(
     timer: Timer,
-    scheduling: Schedule,
+    schedule_getter: impl FnOnce(usize) -> Schedule,
 ) -> Result<usize, TriggeringError> {
     let key: usize = TIMERS
         .with(|t| t.try_borrow_mut().map(|mut t| t.insert(timer)))
-        .context(InsertingSnafu)?;
+        .context(QueueBorrowedSnafu)?;
+    let schedule = schedule_getter(key);
     QUEUE
         .with(|q| {
-            q.try_borrow_mut()
-                .map(|mut q| q.push(key, Reverse(scheduling)))
+            q.try_borrow_mut().map(|mut q| {
+                let new_position = q.partition_point(|s| s < &schedule);
+                q.insert(new_position, schedule)
+            })
         })
-        .context(InsertingSnafu)?;
+        .context(QueueBorrowedSnafu)?;
     Ok(key)
 }
 
-pub(crate) fn delete_timer(timer_key: usize) -> Result<Timer, TriggeringError> {
-    let (removed_key, _) = QUEUE
-        .with(|q| q.try_borrow_mut().map(|mut q| q.remove(&timer_key)))
-        .context(QueueBorrowedSnafu)?
-        .context(TimerNotInQueueSnafu)?;
-
-    Ok(TIMERS
-        .with(|t| t.try_borrow_mut().map(|mut t| t.remove(removed_key)))
-        .context(QueueBorrowedSnafu)?)
+pub(crate) fn delete_timer(timer_key: usize) -> Result<(), TriggeringError> {
+    TIMERS
+        .with(|t| {
+            t.try_borrow_mut().map(|mut t| {
+                if t.get(timer_key).is_some() {
+                    t.remove(timer_key);
+                }
+            })
+        })
+        .context(QueueBorrowedSnafu)?;
+    QUEUE
+        .with(|q| {
+            q.try_borrow_mut()
+                .map(|mut q| q.retain(|s| s.key != timer_key))
+        })
+        .context(QueueBorrowedSnafu)?;
+    Ok(())
 }
 
 pub(crate) fn reschedule_timer(key: usize, new_schedule: Schedule) -> Result<(), TriggeringError> {
     QUEUE.with(|q| {
-        q.try_borrow_mut()
-            .context(QueueBorrowedSnafu)?
-            .change_priority(&key, Reverse(new_schedule))
-            .map(|_| ())
-            .context(TimerNotInQueueSnafu)
+        let mut q = q.try_borrow_mut().context(QueueBorrowedSnafu)?;
+        let current_index = q
+            .iter()
+            .position(|s| s.key == key)
+            .context(TimerNotInQueueSnafu)?;
+        let new_index = q.partition_point(|s| s < &new_schedule);
+        q[current_index].next_trigger = new_schedule.next_trigger;
+        q[current_index].repeat = new_schedule.repeat;
+        if new_index < current_index {
+            q[new_index..=current_index].rotate_right(1);
+        } else if new_index > current_index {
+            q[current_index..=new_index].rotate_left(1);
+        }
+        Ok(())
     })
 }
 
 pub(crate) fn remove_timers(predicate: impl Fn(&Timer) -> bool) {
+    let mut deleted_timers = FnvHashSet::default();
     TIMERS.with_borrow_mut(|timers| {
-        QUEUE.with_borrow_mut(|queue| {
-            timers.retain(|key, timer| {
-                if predicate(timer) {
-                    queue.remove(&key);
-                    false
-                } else {
-                    true
-                }
-            });
+        timers.retain(|key, timer| {
+            if predicate(timer) {
+                deleted_timers.insert(key);
+                false
+            } else {
+                true
+            }
         });
+    });
+
+    QUEUE.with_borrow_mut(|queue| {
+        queue.retain(|schedule| !deleted_timers.contains(&schedule.key));
     });
 }
 
@@ -102,7 +123,7 @@ pub(crate) fn trigger_next_due_and_then<T>(
     timer_manipulator: impl Fn(&Timer) -> T,
 ) -> Option<T> {
     QUEUE.with_borrow_mut(|q| {
-        let Some((&key, &Reverse(scheduled))) = q.peek() else {
+        let Some(scheduled @ &Schedule { key, .. }) = q.last() else {
             return None;
         };
         if scheduled.next_trigger > now {
@@ -110,16 +131,22 @@ pub(crate) fn trigger_next_due_and_then<T>(
         }
 
         if let Repeat::Every(interval) = scheduled.repeat {
-            q.change_priority_by(&key, |&mut Reverse(ref mut schedule)| {
-                schedule.next_trigger = now + interval;
-            });
+            let next_trigger = now + interval;
+            let old_position = q.len() - 1;
+            let new_position =
+                q[..old_position].partition_point(|s| s.next_trigger >= next_trigger);
+            q[old_position].next_trigger = next_trigger;
+            if new_position < old_position {
+                q[new_position..].rotate_right(1);
+            }
+
             TIMERS.with_borrow_mut(|t| {
                 let timer = t.get_mut(key).expect("due timer should be in slab");
                 Some(timer_manipulator(timer))
             })
         } else {
-            let (descheduled, _) = q.pop().expect("due timer should be in queue");
-            assert_eq!(descheduled, key);
+            let descheduled = q.pop().expect("due timer should be in queue");
+            assert_eq!(descheduled.key, key);
 
             let timer = TIMERS.with_borrow_mut(|t| t.remove(key));
             Some(timer_manipulator(&timer))

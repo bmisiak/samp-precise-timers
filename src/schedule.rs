@@ -12,6 +12,7 @@ pub(crate) enum Repeat {
 pub(crate) struct Schedule {
     pub repeat: Repeat,
     pub next_trigger: Instant,
+    pub key: usize,
 }
 
 impl PartialEq for Schedule {
@@ -30,6 +31,6 @@ impl PartialOrd for Schedule {
 
 impl Ord for Schedule {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.next_trigger.cmp(&other.next_trigger)
+        other.next_trigger.cmp(&self.next_trigger)
     }
 }
