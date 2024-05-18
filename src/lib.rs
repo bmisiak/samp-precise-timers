@@ -41,7 +41,7 @@ impl PreciseTimers {
             .ok_or(AmxError::Params)
             .map(Duration::from_millis)?;
         let repeat = args.next::<bool>().ok_or(AmxError::Params)?;
-        let passed_arguments = VariadicAmxArguments::from_amx_args(args, 3)?;
+        let passed_arguments = VariadicAmxArguments::from_amx_args::<3>(args)?;
 
         let timer = Timer {
             passed_arguments,

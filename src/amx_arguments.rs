@@ -1,6 +1,9 @@
-use log::error;
-use samp::{amx::Amx, consts::AmxExecIdx, error::AmxError, prelude::AmxString};
-use std::convert::TryFrom;
+use samp::{
+    amx::Amx, args::Args, cell::UnsizedBuffer, consts::AmxExecIdx, error::AmxError,
+    prelude::AmxString,
+};
+use snafu::{ensure, OptionExt, ResultExt};
+use std::{convert::TryInto, num::TryFromIntError};
 
 /// These are the types of arguments the plugin supports for passing on to the callback.
 #[derive(Debug, Clone)]
@@ -36,69 +39,74 @@ pub(crate) struct VariadicAmxArguments {
     inner: Vec<PassedArgument>,
 }
 
+#[derive(Debug, snafu::Snafu)]
+#[snafu(context(suffix(false)))]
+pub(crate) enum ArgError {
+    #[snafu(display("The list of types ({letters:?}) has {expected} letters, but received {received} arguments."))]
+    MismatchedAmountOfArgs {
+        received: usize,
+        expected: usize,
+        letters: Vec<u8>,
+    },
+    MissingTypeLetters,
+    MissingArrayLength,
+    MissingArg,
+    InvalidArrayLength {
+        source: TryFromIntError,
+    },
+}
+
+impl From<ArgError> for AmxError {
+    fn from(value: ArgError) -> Self {
+        log::error!("param error: {value:?}");
+        AmxError::Params
+    }
+}
+
+#[rustfmt::skip]
 impl VariadicAmxArguments {
     #[cfg(test)]
     pub fn empty() -> Self {
         Self { inner: vec![] }
     }
 
-    fn get_type_letters(
-        args: &mut samp::args::Args,
-        skipped_args: usize,
-    ) -> Result<Vec<u8>, AmxError> {
-        let non_variadic_args = skipped_args + 1;
-        let variadic_argument_types = args.next::<AmxString>().ok_or_else(|| {
-            error!("Missing an argument which specifies types of variadic arguments.");
-            AmxError::Params
-        })?;
-        let type_letters = variadic_argument_types.to_bytes();
-        let expected_variadic_args = type_letters.len();
-        let received_variadic_args = args.count() - non_variadic_args;
-
-        if expected_variadic_args == received_variadic_args {
-            Ok(type_letters)
-        } else {
-            error!("The amount of arguments passed ({}) does not match the length of the list of types ({}: {}).",
-                received_variadic_args,
-                expected_variadic_args,
-                variadic_argument_types
-            );
-            Err(AmxError::Params)
-        }
+    /// The user of the plugin specifies what kind of arguments
+    /// they want passed onto the timer, followed by the
+    /// actual arguments.
+    //// This verifies the validity of the letters.
+    /// # Example
+    /// `"iiaAs"`: "two integers, an array and its length, and a string"
+    fn get_type_letters<const SKIPPED_ARGS: usize>(
+        args: &mut Args,
+    ) -> Result<impl ExactSizeIterator<Item = u8>, ArgError> {
+        let non_variadic_args = SKIPPED_ARGS + 1;
+        let letters = args.next::<AmxString>().context(MissingTypeLetters)?.to_bytes();
+        let expected = letters.len();
+        let received = args.count() - non_variadic_args;
+        ensure!(expected == received, MismatchedAmountOfArgs { expected, received, letters });
+        Ok(letters.into_iter())
     }
 
     /// Consumes variadic PAWN params into Vec<PassedArgument>
-    /// It expects the first of args to be a string of type letters, e.g. `"dds"`,
+    /// It expects the first of `args` to be a string of type letters, e.g. `"dds"`,
     /// which instruct us how to interpret the following arguments.
-    pub fn from_amx_args(
-        mut args: samp::args::Args,
-        skipped_args: usize,
-    ) -> Result<VariadicAmxArguments, AmxError> {
-        let type_letters = Self::get_type_letters(&mut args, skipped_args)?;
-        let mut type_letters_iter = type_letters.iter();
+    pub fn from_amx_args<const SKIPPED_ARGS: usize>(
+        mut args: Args,
+    ) -> Result<VariadicAmxArguments, ArgError> {
+        let mut letters = Self::get_type_letters::<SKIPPED_ARGS>(&mut args)?;
+        let mut collected_arguments: Vec<PassedArgument> = Vec::with_capacity(letters.len());
 
-        let mut collected_arguments: Vec<PassedArgument> = Vec::with_capacity(type_letters.len());
-
-        while let Some(type_letter) = type_letters_iter.next() {
+        while let Some(type_letter) = letters.next() {
             collected_arguments.push(match type_letter {
-                b's' => PassedArgument::Str(args.next::<AmxString>().ok_or(AmxError::Params)?.to_bytes()),
-                b'a' => {
-                    if let Some(b'i' | b'A') = type_letters_iter.next() {
-                        let array_argument: samp::cell::UnsizedBuffer = args.next().ok_or(AmxError::Params)?;
-                        let length_argument = args
-                            .next::<i32>()
-                            .and_then(|len| usize::try_from(len).ok()).ok_or(AmxError::Params)?;
-                        let amx_buffer = array_argument.into_sized_buffer(length_argument);
-
-                        PassedArgument::Array(amx_buffer.as_slice().to_vec())
-                    } else {
-                        error!(
-                            "Array arguments (a) must be followed by an array length argument (i/A)."
-                        );
-                        return Err(AmxError::Params);
-                    }
-                }
-                _ => PassedArgument::PrimitiveCell(args.next::<i32>().ok_or(AmxError::Params)?),
+                b's' => PassedArgument::Str(args.next::<AmxString>().context(MissingArg)?.to_bytes()),
+                b'a' => PassedArgument::Array({
+                    ensure!(matches!(letters.next(), Some(b'i' | b'A')), MissingArrayLength);
+                    let buffer: UnsizedBuffer = args.next().context(MissingArg)?;
+                    let length = args.next::<i32>().context(MissingArg)?.try_into().context(InvalidArrayLength)?;
+                    let sized_buffer = buffer.into_sized_buffer(length);
+                    sized_buffer.as_slice().to_vec()
+                }),
+                _ => PassedArgument::PrimitiveCell(args.next::<i32>().context(MissingArg)?),
             });
         }
         Ok(Self {

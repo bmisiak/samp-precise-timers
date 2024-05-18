@@ -1,12 +1,9 @@
-use std::{
-    cell::{BorrowMutError, RefCell},
-    time::Instant,
-};
+use std::{cell::RefCell, time::Instant};
 
 use fnv::FnvHashSet;
 use samp::error::AmxError;
 use slab::Slab;
-use snafu::{OptionExt, ResultExt, Snafu};
+use snafu::{ensure, OptionExt, Snafu};
 
 use crate::{
     schedule::{Repeat, Schedule},
@@ -17,7 +14,7 @@ thread_local! {
     /// A slotmap of timers. Stable keys.
     static TIMERS: RefCell<Slab<Timer>> = RefCell::new(Slab::with_capacity(1000));
     /// Always sorted queue of timers. Easy O(1) peeking and popping of the next scheduled timer.
-    static QUEUE: RefCell<Vec<Schedule>> = RefCell::new(Vec::with_capacity(1000));
+    pub static QUEUE: RefCell<Vec<Schedule>> = RefCell::new(Vec::with_capacity(1000));
 }
 
 #[derive(Debug, Snafu)]
@@ -26,12 +23,6 @@ pub(crate) enum TriggeringError {
     Callback { source: AmxError, timer_key: usize },
     #[snafu(display("Unable to find timer in priority queue"))]
     TimerNotInQueue,
-    #[snafu(display("Failed to get access to priority queue"))]
-    QueueBorrowed { source: BorrowMutError },
-    #[snafu(display("Inserting timer failed, unable to access store"))]
-    Inserting { source: BorrowMutError },
-    #[snafu(display("Popped timer is different from the expected due timer"))]
-    ExpectedInSlab,
     #[snafu(display("Unable to push arguments onto AMX stack"))]
     StackPush { source: AmxError },
 }
@@ -40,43 +31,27 @@ pub(crate) fn insert_and_schedule_timer(
     timer: Timer,
     schedule_getter: impl FnOnce(usize) -> Schedule,
 ) -> Result<usize, TriggeringError> {
-    let key: usize = TIMERS
-        .with(|t| t.try_borrow_mut().map(|mut t| t.insert(timer)))
-        .context(QueueBorrowedSnafu)?;
+    let key: usize = TIMERS.with_borrow_mut(|t| t.insert(timer));
     let schedule = schedule_getter(key);
-    QUEUE
-        .with(|q| {
-            q.try_borrow_mut().map(|mut q| {
-                let new_position = q.partition_point(|s| s < &schedule);
-                q.insert(new_position, schedule)
-            })
-        })
-        .context(QueueBorrowedSnafu)?;
+    QUEUE.with_borrow_mut(|q| {
+        let new_position = q.partition_point(|s| s < &schedule);
+        q.insert(new_position, schedule);
+    });
     Ok(key)
 }
 
 pub(crate) fn delete_timer(timer_key: usize) -> Result<(), TriggeringError> {
-    TIMERS
-        .with(|t| {
-            t.try_borrow_mut().map(|mut t| {
-                if t.get(timer_key).is_some() {
-                    t.remove(timer_key);
-                }
-            })
-        })
-        .context(QueueBorrowedSnafu)?;
-    QUEUE
-        .with(|q| {
-            q.try_borrow_mut()
-                .map(|mut q| q.retain(|s| s.key != timer_key))
-        })
-        .context(QueueBorrowedSnafu)?;
+    TIMERS.with_borrow_mut(|t| {
+        ensure!(t.contains(timer_key), TimerNotInQueueSnafu);
+        t.remove(timer_key);
+        Ok(())
+    })?;
+    QUEUE.with_borrow_mut(|q| q.retain(|s| s.key != timer_key));
     Ok(())
 }
 
 pub(crate) fn reschedule_timer(key: usize, new_schedule: Schedule) -> Result<(), TriggeringError> {
-    QUEUE.with(|q| {
-        let mut q = q.try_borrow_mut().context(QueueBorrowedSnafu)?;
+    QUEUE.with_borrow_mut(|q| {
         let current_index = q
             .iter()
             .position(|s| s.key == key)
@@ -133,11 +108,12 @@ pub(crate) fn trigger_next_due_and_then<T>(
         if let Repeat::Every(interval) = scheduled.repeat {
             let next_trigger = now + interval;
             let old_position = q.len() - 1;
-            let new_position =
-                q[..old_position].partition_point(|s| s.next_trigger >= next_trigger);
+            let new_position = q.partition_point(|s| s.next_trigger >= next_trigger);
             q[old_position].next_trigger = next_trigger;
             if new_position < old_position {
                 q[new_position..].rotate_right(1);
+            } else {
+                debug_assert_eq!(new_position, old_position);
             }
 
             TIMERS.with_borrow_mut(|t| {
@@ -160,13 +136,15 @@ mod test {
 
     use samp::raw::types::AMX;
 
-    use crate::schedule::Repeat;
+    use crate::schedule::Repeat::{DontRepeat, Every};
+    use crate::scheduling::QUEUE;
     use crate::Timer;
     use crate::{amx_arguments::VariadicAmxArguments, scheduling::trigger_next_due_and_then};
+    use std::time::{Duration, Instant};
 
     use super::{insert_and_schedule_timer, Schedule};
 
-    fn mock_no_arg_timer() -> Timer {
+    fn empty_timer() -> Timer {
         let amx_pointer: *mut AMX = null_mut();
         Timer {
             passed_arguments: VariadicAmxArguments::empty(),
@@ -175,17 +153,43 @@ mod test {
         }
     }
 
+    fn noop(_timer: &Timer) {}
+
+    fn every_1s(key: usize) -> Schedule {
+        Schedule {
+            key,
+            next_trigger: Instant::now() + Duration::from_secs(key as u64),
+            repeat: Every(Duration::from_secs(1)),
+        }
+    }
+
+    fn dont_repeat(key: usize) -> Schedule {
+        Schedule {
+            key,
+            next_trigger: Instant::now() + Duration::from_secs(key as u64),
+            repeat: DontRepeat,
+        }
+    }
+
+    fn timer_keys(q: &Vec<Schedule>) -> Vec<usize> {
+        dbg!(q);
+        q.iter().map(|s| s.key).collect()
+    }
+
     #[test]
     fn hello() {
-        insert_and_schedule_timer(
-            mock_no_arg_timer(),
-            Schedule {
-                next_trigger: std::time::Instant::now(),
-                repeat: Repeat::DontRepeat,
-            },
-        )
-        .unwrap();
-        let callback = trigger_next_due_and_then(std::time::Instant::now(), |_timer| ());
-        assert!(callback.is_some());
+        assert_eq!(trigger_next_due_and_then(Instant::now(), noop), None);
+        let first = insert_and_schedule_timer(empty_timer(), every_1s).unwrap();
+        let second = insert_and_schedule_timer(empty_timer(), every_1s).unwrap();
+        let third = insert_and_schedule_timer(empty_timer(), every_1s).unwrap();
+        let fourth = insert_and_schedule_timer(empty_timer(), dont_repeat).unwrap();
+        QUEUE.with_borrow(|q| {
+            assert_eq!(timer_keys(q), [fourth, third, second, first]);
+        });
+        assert!(trigger_next_due_and_then(Instant::now(), noop).is_some());
+        QUEUE.with_borrow(|q| {
+            assert_eq!(timer_keys(q), [fourth, third, first, second]);
+        });
+        assert_eq!(trigger_next_due_and_then(Instant::now(), noop), None);
     }
 }
