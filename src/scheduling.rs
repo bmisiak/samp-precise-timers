@@ -172,10 +172,10 @@ mod test {
     #[test]
     fn hello() {
         assert_eq!(trigger_next_due_and_then(Instant::now(), noop), None);
-        let first = insert_and_schedule_timer(empty_timer(), every_1s).unwrap();
-        let second = insert_and_schedule_timer(empty_timer(), every_1s).unwrap();
-        let third = insert_and_schedule_timer(empty_timer(), every_1s).unwrap();
-        let fourth = insert_and_schedule_timer(empty_timer(), dont_repeat).unwrap();
+        let first = insert_and_schedule_timer(empty_timer(), every_1s);
+        let second = insert_and_schedule_timer(empty_timer(), every_1s);
+        let third = insert_and_schedule_timer(empty_timer(), every_1s);
+        let fourth = insert_and_schedule_timer(empty_timer(), dont_repeat);
         STATE.with_borrow_mut(|&mut State { ref mut queue, .. }| {
             assert_eq!(timer_keys(queue), [fourth, third, second, first]);
         });
