@@ -31,7 +31,7 @@ Most other plugins, including the native OpenMP implementation, iterate over all
 - Creating new timers from callbacks works fine. ✔
 - Supports strings and arrays properly without memory leaks. ✔
 - Deleting/resetting a repeating timer from its callback works fine ✔
-- Deleting/resetting a singulat timer form its PAWN callback will gracefully fail. Set a new one instead. :)
+- Deleting/resetting a singular timer form its PAWN callback will gracefully fail. Set a new one instead.
 
 ## Compiling
 

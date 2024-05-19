@@ -1,4 +1,3 @@
-#![feature(extract_if)]
 #![warn(clippy::pedantic)]
 use amx_arguments::VariadicAmxArguments;
 

@@ -1,5 +1,6 @@
 use std::{cell::RefCell, time::Instant};
 
+use fnv::FnvHashSet;
 use slab::Slab;
 use snafu::{ensure, OptionExt, Snafu};
 
@@ -71,11 +72,16 @@ pub(crate) fn reschedule_timer(key: usize, new_schedule: Schedule) -> Result<(),
 
 pub(crate) fn remove_timers(predicate: impl Fn(&Timer) -> bool) {
     STATE.with_borrow_mut(|&mut State { ref mut timers, ref mut queue }| {
-        let keys: Vec<usize> = queue
-            .extract_if(|schedule| predicate(&timers[schedule.key]))
-            .map(|schedule| schedule.key)
-            .collect();
-        for key in keys {
+        let mut removed_keys = FnvHashSet::default();
+        queue.retain(|&Schedule { key, .. }| {
+            if predicate(&timers[key]) {
+                removed_keys.insert(key);
+                false
+            } else {
+                true
+            }
+        });
+        for key in removed_keys {
             timers.remove(key);
         }
     });
