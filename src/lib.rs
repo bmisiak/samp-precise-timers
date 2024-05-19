@@ -53,8 +53,7 @@ impl PreciseTimers {
             key,
             next_trigger: Instant::now() + interval,
             repeat: if repeat { Every(interval) } else { DontRepeat },
-        })
-        .map_err(|_| AmxError::MemoryAccess)?;
+        });
         // The timer's slot in Slab<> incresed by 1, so that 0 signifies an invalid timer in PAWN
         let timer_number = key
             .checked_add(1)
@@ -71,11 +70,11 @@ impl PreciseTimers {
     #[samp::native(name = "DeletePreciseTimer")]
     pub fn delete(&self, _: &Amx, timer_number: usize) -> AmxResult<i32> {
         let key = timer_number - 1;
-        if delete_timer(key).is_ok() {
-            Ok(1)
-        } else {
-            Ok(0)
+        if let Err(err) = delete_timer(key) {
+            error!("{err}");
+            return Ok(0);
         }
+        Ok(1)
     }
 
     /// This function is called from PAWN via the C foreign function interface.
@@ -96,19 +95,16 @@ impl PreciseTimers {
             .map_err(|_| AmxError::Params)
             .map(Duration::from_millis)?;
 
-        if let Err(error) = reschedule_timer(
+        let schedule = Schedule {
             key,
-            Schedule {
-                key,
-                next_trigger: Instant::now() + interval,
-                repeat: if repeat { Every(interval) } else { DontRepeat },
-            },
-        ) {
+            next_trigger: Instant::now() + interval,
+            repeat: if repeat { Every(interval) } else { DontRepeat },
+        };
+        if let Err(error) = reschedule_timer(key, schedule) {
             error!("{error}");
-            Ok(0)
-        } else {
-            Ok(1)
+            return Ok(0);
         }
+        Ok(1)
     }
 }
 

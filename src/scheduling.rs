@@ -32,13 +32,13 @@ pub(crate) enum TriggeringError {
 pub(crate) fn insert_and_schedule_timer(
     timer: Timer,
     get_schedule_based_on_key: impl FnOnce(usize) -> Schedule,
-) -> Result<usize, TriggeringError> {
+) -> usize {
     STATE.with_borrow_mut(|&mut State { ref mut timers, ref mut queue }| {
         let key = timers.insert(timer);
         let schedule = get_schedule_based_on_key(key);
         let new_position = queue.partition_point(|s| s < &schedule);
         queue.insert(new_position, schedule);
-        Ok(key)
+        key
     })
 }
 
