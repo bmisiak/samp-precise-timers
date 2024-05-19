@@ -34,7 +34,7 @@ pub(crate) fn insert_and_schedule_timer(
     timer: Timer,
     get_schedule_based_on_key: impl FnOnce(usize) -> Schedule,
 ) -> usize {
-    STATE.with_borrow_mut(|&mut State { ref mut timers, ref mut queue }| {
+    STATE.with_borrow_mut(|State { timers, queue }| {
         let key = timers.insert(timer);
         let schedule = get_schedule_based_on_key(key);
         let new_position = queue.partition_point(|s| s < &schedule);
@@ -44,7 +44,7 @@ pub(crate) fn insert_and_schedule_timer(
 }
 
 pub(crate) fn delete_timer(timer_key: usize) -> Result<(), TriggeringError> {
-    STATE.with_borrow_mut(|&mut State { ref mut timers, ref mut queue }| {
+    STATE.with_borrow_mut(|State { timers, queue }| {
         ensure!(timers.contains(timer_key), TimerNotInQueue);
         timers.remove(timer_key);
         queue.retain(|s| s.key != timer_key);
@@ -53,7 +53,7 @@ pub(crate) fn delete_timer(timer_key: usize) -> Result<(), TriggeringError> {
 }
 
 pub(crate) fn reschedule_timer(key: usize, new_schedule: Schedule) -> Result<(), TriggeringError> {
-    STATE.with_borrow_mut(|&mut State { ref mut queue, .. }| {
+    STATE.with_borrow_mut(|State { queue, .. }| {
         let current_index = queue
             .iter()
             .position(|s| s.key == key)
@@ -71,7 +71,7 @@ pub(crate) fn reschedule_timer(key: usize, new_schedule: Schedule) -> Result<(),
 }
 
 pub(crate) fn remove_timers(predicate: impl Fn(&Timer) -> bool) {
-    STATE.with_borrow_mut(|&mut State { ref mut timers, ref mut queue }| {
+    STATE.with_borrow_mut(|State { timers, queue }| {
         let mut removed_keys = FnvHashSet::default();
         queue.retain(|&Schedule { key, .. }| {
             if predicate(&timers[key]) {
@@ -98,7 +98,7 @@ pub(crate) fn trigger_next_due_and_then<T>(
     now: Instant,
     timer_manipulator: impl Fn(&Timer) -> T,
 ) -> Option<T> {
-    STATE.with_borrow_mut(|&mut State { ref mut timers, ref mut queue }| {
+    STATE.with_borrow_mut(|State { timers, queue }| {
         let Some(scheduled @ &Schedule { key, .. }) = queue.last() else {
             return None;
         };
