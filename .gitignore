@@ -3,4 +3,3 @@ target
 .DS_Store
 .vscode
 build.rs
-.cargo
