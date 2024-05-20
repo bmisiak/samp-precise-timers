@@ -16,12 +16,12 @@ pub enum PassedArgument {
 /// A callback which MUST be executed.
 /// Its args are already on the AMX stack.
 #[must_use]
-pub(crate) struct StackedCallback {
-    pub amx: &'static Amx,
+pub(crate) struct StackedCallback<'amx> {
+    pub amx: &'amx Amx,
     pub callback_idx: AmxExecIdx,
 }
 
-impl StackedCallback {
+impl<'amx> StackedCallback<'amx> {
     /// ### SAFETY:
     /// The `amx.exec()` here might call one of our natives
     /// such as `SetPreciseTimer` (`PreciseTimers::create`).
@@ -115,11 +115,11 @@ impl VariadicAmxArguments {
     }
 
     /// Push the arguments onto the AMX stack, in first-in-last-out order, i.e. reversed
-    pub fn push_onto_amx_stack(
+    pub fn push_onto_amx_stack<'amx>(
         &self,
-        amx: &'static Amx,
+        amx: &'amx Amx,
         callback_idx: AmxExecIdx,
-    ) -> Result<StackedCallback, AmxError> {
+    ) -> Result<StackedCallback<'amx>, AmxError> {
         let allocator = amx.allocator();
         for param in self.inner.iter().rev() {
             match param {

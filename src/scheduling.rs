@@ -94,7 +94,7 @@ pub(crate) fn remove_timers(predicate: impl Fn(&Timer) -> bool) {
 /// 4. Returns the result of the closure.
 /// `timer_manipulator` must not borrow state
 #[inline]
-pub(crate) fn trigger_next_due_and_then<T>(
+pub(crate) fn reschedule_next_due_and_then<T>(
     now: Instant,
     timer_manipulator: impl Fn(&Timer) -> T,
 ) -> Option<T> {
@@ -138,7 +138,7 @@ mod test {
     use crate::schedule::Repeat::{DontRepeat, Every};
     use crate::scheduling::{State, STATE};
     use crate::Timer;
-    use crate::{amx_arguments::VariadicAmxArguments, scheduling::trigger_next_due_and_then};
+    use crate::{amx_arguments::VariadicAmxArguments, scheduling::reschedule_next_due_and_then};
     use std::time::{Duration, Instant};
 
     use super::{insert_and_schedule_timer, Schedule};
@@ -177,7 +177,7 @@ mod test {
 
     #[test]
     fn hello() {
-        assert_eq!(trigger_next_due_and_then(Instant::now(), noop), None);
+        assert_eq!(reschedule_next_due_and_then(Instant::now(), noop), None);
         let first = insert_and_schedule_timer(empty_timer(), every_1s);
         let second = insert_and_schedule_timer(empty_timer(), every_1s);
         let third = insert_and_schedule_timer(empty_timer(), every_1s);
@@ -185,10 +185,10 @@ mod test {
         STATE.with_borrow_mut(|&mut State { ref mut queue, .. }| {
             assert_eq!(timer_keys(queue), [fourth, third, second, first]);
         });
-        assert!(trigger_next_due_and_then(Instant::now(), noop).is_some());
+        assert!(reschedule_next_due_and_then(Instant::now(), noop).is_some());
         STATE.with_borrow_mut(|&mut State { ref mut queue, .. }| {
             assert_eq!(timer_keys(queue), [fourth, third, first, second]);
         });
-        assert_eq!(trigger_next_due_and_then(Instant::now(), noop), None);
+        assert_eq!(reschedule_next_due_and_then(Instant::now(), noop), None);
     }
 }
