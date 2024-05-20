@@ -50,7 +50,7 @@ pub(crate) enum ArgError {
     },
     MissingTypeLetters,
     MissingArrayLength,
-    MissingArg,
+    NeedArg,
     InvalidArrayLength {
         source: TryFromIntError,
     },
@@ -63,7 +63,6 @@ impl From<ArgError> for AmxError {
     }
 }
 
-#[rustfmt::skip]
 impl VariadicAmxArguments {
     #[cfg(test)]
     pub fn empty() -> Self {
@@ -80,10 +79,16 @@ impl VariadicAmxArguments {
         args: &mut Args,
     ) -> Result<impl ExactSizeIterator<Item = u8>, ArgError> {
         let non_variadic_args = SKIPPED_ARGS + 1;
-        let letters = args.next::<AmxString>().context(MissingTypeLetters)?.to_bytes();
+        let letters = args
+            .next::<AmxString>()
+            .context(MissingTypeLetters)?
+            .to_bytes();
         let expected = letters.len();
         let received = args.count() - non_variadic_args;
-        ensure!(expected == received, MismatchedAmountOfArgs { expected, received, letters });
+        ensure!(
+            expected == received,
+            MismatchedAmountOfArgs { expected, received, letters }
+        );
         Ok(letters.into_iter())
     }
 
@@ -98,20 +103,24 @@ impl VariadicAmxArguments {
 
         while let Some(type_letter) = letters.next() {
             collected_arguments.push(match type_letter {
-                b's' => PassedArgument::Str(args.next::<AmxString>().context(MissingArg)?.to_bytes()),
+                b's' => PassedArgument::Str(args.next::<AmxString>().context(NeedArg)?.to_bytes()),
                 b'a' => PassedArgument::Array({
-                    ensure!(matches!(letters.next(), Some(b'i' | b'A')), MissingArrayLength);
-                    let buffer: UnsizedBuffer = args.next().context(MissingArg)?;
-                    let length = args.next::<i32>().context(MissingArg)?.try_into().context(InvalidArrayLength)?;
+                    let len_letter = letters.next();
+                    ensure!(matches!(len_letter, Some(b'i' | b'A')), MissingArrayLength);
+                    
+                    let buffer: UnsizedBuffer = args.next().context(NeedArg)?;
+                    let length: usize = args
+                        .next::<i32>()
+                        .context(NeedArg)?
+                        .try_into()
+                        .context(InvalidArrayLength)?;
                     let sized_buffer = buffer.into_sized_buffer(length);
                     sized_buffer.as_slice().to_vec()
                 }),
-                _ => PassedArgument::PrimitiveCell(args.next::<i32>().context(MissingArg)?),
+                _ => PassedArgument::PrimitiveCell(args.next::<i32>().context(NeedArg)?),
             });
         }
-        Ok(Self {
-            inner: collected_arguments,
-        })
+        Ok(Self { inner: collected_arguments })
     }
 
     /// Push the arguments onto the AMX stack, in first-in-last-out order, i.e. reversed

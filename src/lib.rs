@@ -7,7 +7,7 @@ use samp::amx::Amx;
 use samp::cell::AmxString;
 use samp::error::{AmxError, AmxResult};
 use samp::plugin::SampPlugin;
-use scheduling::{reschedule_timer, reschedule_next_due_and_then};
+use scheduling::{reschedule_next_due_and_then, reschedule_timer};
 
 use std::convert::TryFrom;
 use std::time::{Duration, Instant};
