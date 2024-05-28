@@ -87,7 +87,7 @@ impl VariadicAmxArguments {
         let received = args.count() - non_variadic_args;
         ensure!(
             expected == received,
-            MismatchedAmountOfArgs { expected, received, letters }
+            MismatchedAmountOfArgs { received, expected, letters }
         );
         Ok(letters.into_iter())
     }

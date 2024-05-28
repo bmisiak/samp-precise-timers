@@ -1,6 +1,5 @@
 use std::{cell::RefCell, time::Instant};
 
-use fnv::FnvHashSet;
 use slab::Slab;
 use snafu::{ensure, OptionExt, Snafu};
 
@@ -72,10 +71,10 @@ pub(crate) fn reschedule_timer(key: usize, new_schedule: Schedule) -> Result<(),
 
 pub(crate) fn remove_timers(predicate: impl Fn(&Timer) -> bool) {
     STATE.with_borrow_mut(|State { timers, queue }| {
-        let mut removed_keys = FnvHashSet::default();
+        let mut removed_keys = vec![];
         queue.retain(|&Schedule { key, .. }| {
             if predicate(&timers[key]) {
-                removed_keys.insert(key);
+                removed_keys.push(key);
                 false
             } else {
                 true
@@ -120,7 +119,7 @@ pub(crate) fn reschedule_next_due_and_then<T>(
             let timer = timers.get_mut(key).expect("due timer should be in slab");
             Some(timer_manipulator(timer))
         } else {
-            let descheduled = queue.pop().expect("due timer should be in queue");
+            let descheduled2 = queue.pop().expect("due timer should be in queue");
             assert_eq!(descheduled.key, key);
 
             let timer = timers.remove(key);

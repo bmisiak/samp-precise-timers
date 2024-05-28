@@ -15,7 +15,6 @@ samp = { git = "https://github.com/bmisiak/samp-sdk.git", rev = "41e94ed94ee8366
 slab = "0.4.2"
 log = "0.4.6"
 fern = { version = "0.6", features = [] }
-fnv = "1.0.7"
 snafu = "0.8.0"
 
 [profile.release]
