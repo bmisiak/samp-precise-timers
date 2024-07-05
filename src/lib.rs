@@ -1,8 +1,8 @@
 #![warn(clippy::pedantic)]
 use amx_arguments::VariadicAmxArguments;
 
+use durr::{now, Durr};
 use log::{error, info};
-
 use samp::amx::Amx;
 use samp::cell::AmxString;
 use samp::error::{AmxError, AmxResult};
@@ -34,13 +34,13 @@ impl PreciseTimers {
     #[samp::native(raw, name = "SetPreciseTimer")]
     pub fn create(&self, amx: &Amx, mut args: samp::args::Args) -> AmxResult<i32> {
         // Get the basic, mandatory timer parameters
-        let callback_name = args.next::<AmxString>().ok_or(AmxError::Params)?;
+        let callback_name: AmxString = args.next().ok_or(AmxError::Params)?;
         let interval = args
-            .next::<i32>()
-            .and_then(|ms| u64::try_from(ms).ok())
-            .ok_or(AmxError::Params)
-            .map(Duration::from_millis)?;
-        let repeat = args.next::<bool>().ok_or(AmxError::Params)?;
+            .next()
+            .and_then(|ms: i32| u64::try_from(ms).ok())
+            .ok_or(AmxError::Params)?
+            .milliseconds();
+        let repeat: bool = args.next().ok_or(AmxError::Params)?;
         let passed_arguments = VariadicAmxArguments::from_amx_args::<3>(args)?;
 
         let timer = Timer {
@@ -50,7 +50,7 @@ impl PreciseTimers {
         };
         let key = insert_and_schedule_timer(timer, |key| Schedule {
             key,
-            next_trigger: Instant::now() + interval,
+            next_trigger: now() + interval,
             repeat: if repeat { Every(interval) } else { DontRepeat },
         });
         // The timer's slot in Slab<> incresed by 1, so that 0 signifies an invalid timer in PAWN
@@ -91,12 +91,12 @@ impl PreciseTimers {
     ) -> AmxResult<i32> {
         let key = timer_number - 1;
         let interval = u64::try_from(interval)
-            .map_err(|_| AmxError::Params)
-            .map(Duration::from_millis)?;
+            .map_err(|_| AmxError::Params)?
+            .milliseconds();
 
         let schedule = Schedule {
             key,
-            next_trigger: Instant::now() + interval,
+            next_trigger: now() + interval,
             repeat: if repeat { Every(interval) } else { DontRepeat },
         };
         if let Err(error) = reschedule_timer(key, schedule) {
@@ -119,7 +119,7 @@ impl SampPlugin for PreciseTimers {
     #[allow(clippy::inline_always)]
     #[inline(always)]
     fn process_tick(&self) {
-        let now = Instant::now();
+        let now = now();
 
         while let Some(callback) = reschedule_next_due_and_then(now, Timer::stack_callback_on_amx) {
             match callback {

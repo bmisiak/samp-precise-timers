@@ -133,13 +133,14 @@ pub(crate) fn reschedule_next_due_and_then<T>(
 mod test {
     use std::ptr::null_mut;
 
+    use durr::{now, Durr};
     use samp::raw::types::AMX;
 
     use crate::schedule::Repeat::{DontRepeat, Every};
     use crate::scheduling::{State, STATE};
     use crate::Timer;
     use crate::{amx_arguments::VariadicAmxArguments, scheduling::reschedule_next_due_and_then};
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     use super::{insert_and_schedule_timer, Schedule};
 
@@ -157,15 +158,15 @@ mod test {
     fn every_1s(key: usize) -> Schedule {
         Schedule {
             key,
-            next_trigger: Instant::now() + Duration::from_secs(key as u64),
-            repeat: Every(Duration::from_secs(1)),
+            next_trigger: now() + (key as u64).seconds(),
+            repeat: Every(1.seconds()),
         }
     }
 
     fn dont_repeat(key: usize) -> Schedule {
         Schedule {
             key,
-            next_trigger: Instant::now() + Duration::from_secs(key as u64),
+            next_trigger: now() + (key as u64).seconds(),
             repeat: DontRepeat,
         }
     }
@@ -177,7 +178,7 @@ mod test {
 
     #[test]
     fn hello() {
-        assert_eq!(reschedule_next_due_and_then(Instant::now(), noop), None);
+        assert_eq!(reschedule_next_due_and_then(now(), noop), None);
         let first = insert_and_schedule_timer(empty_timer(), every_1s);
         let second = insert_and_schedule_timer(empty_timer(), every_1s);
         let third = insert_and_schedule_timer(empty_timer(), every_1s);
@@ -185,10 +186,10 @@ mod test {
         STATE.with_borrow_mut(|&mut State { ref mut queue, .. }| {
             assert_eq!(timer_keys(queue), [fourth, third, second, first]);
         });
-        assert!(reschedule_next_due_and_then(Instant::now(), noop).is_some());
+        assert!(reschedule_next_due_and_then(now(), noop).is_some());
         STATE.with_borrow_mut(|&mut State { ref mut queue, .. }| {
             assert_eq!(timer_keys(queue), [fourth, third, first, second]);
         });
-        assert_eq!(reschedule_next_due_and_then(Instant::now(), noop), None);
+        assert_eq!(reschedule_next_due_and_then(now(), noop), None);
     }
 }

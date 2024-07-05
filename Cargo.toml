@@ -17,6 +17,7 @@ log = "0.4.6"
 fern = { version = "0.6", features = [] }
 fnv = "1.0.7"
 snafu = "0.8.0"
+durr = "2"
 
 [profile.release]
 lto = true

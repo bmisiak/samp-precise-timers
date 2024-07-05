@@ -15,6 +15,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b486ce3ccf7ffd79fdeb678eac06a9e6c09fc88d33836340becb8fffe87c5e33"
 
 [[package]]
+name = "durr"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6150896f7f231d85fb8b13d5ef6974bbfae83cd857a0f5bd5ec5c856da32f5b"
+
+[[package]]
 name = "fern"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -104,6 +110,7 @@ dependencies = [
 name = "samp-precise-timers"
 version = "1.0.0"
 dependencies = [
+ "durr",
  "fern",
  "fnv",
  "log",

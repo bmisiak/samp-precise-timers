@@ -29,6 +29,7 @@ impl<'amx> StackedCallback<'amx> {
     /// the scheduling store(s) e.g. `TIMERS` and `QUEUE`.
     /// To avoid aliasing, there MUST NOT be any
     /// active references to them when this is called.
+    #[inline]
     pub unsafe fn execute(self) -> Result<i32, AmxError> {
         self.amx.exec(self.callback_idx)
     }
