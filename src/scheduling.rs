@@ -1,12 +1,10 @@
 use std::{cell::RefCell, time::Instant};
 
 use fnv::FnvHashSet;
-use samp::error::AmxError;
 use slab::Slab;
 use snafu::{ensure, OptionExt, Snafu};
 
 use crate::{
-    amx_arguments::StackedCallback,
     schedule::{Repeat, Schedule},
     timer::Timer,
 };

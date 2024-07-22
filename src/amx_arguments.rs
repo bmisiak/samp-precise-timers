@@ -7,7 +7,7 @@ use samp::{
     prelude::AmxString,
 };
 use snafu::{ensure, OptionExt, ResultExt};
-use std::{convert::TryInto, num::TryFromIntError, pin::Pin};
+use std::{convert::TryInto, num::TryFromIntError};
 
 /// These are the types of arguments the plugin supports for passing on to the callback.
 #[derive(Debug, Clone)]
@@ -92,7 +92,7 @@ impl VariadicAmxArguments {
         let letters = args.next::<AmxString>().context(MissingTypeLetters)?.to_bytes();
         let expected = letters.len();
         let received = args.count() - non_variadic_args;
-        ensure!(expected == received, MismatchedAmountOfArgs { expected, received, letters });
+        ensure!(expected == received, MismatchedAmountOfArgs { received, expected, letters });
         Ok(letters.into_iter())
     }
 
@@ -134,7 +134,7 @@ impl VariadicAmxArguments {
             amx: amx.clone(),
             callback_idx, 
             allocator_builder: |amx| { 
-                let allocator = amx.allocator();
+                let allocator: Allocator = amx.allocator();
                 for param in self.inner.iter().rev() {
                     match param {
                         PassedArgument::PrimitiveCell(cell_value) => {
