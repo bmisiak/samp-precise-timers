@@ -1,7 +1,7 @@
 use crate::amx_arguments::{StackedCallback, VariadicAmxArguments};
 
 use samp::{
-    amx::{self, Amx, AmxIdent},
+    amx::{self, Amx},
     consts::AmxExecIdx,
     error::AmxError,
 };
@@ -10,19 +10,17 @@ use samp::{
 #[derive(Debug, Clone)]
 pub(crate) struct Timer {
     pub passed_arguments: VariadicAmxArguments,
-    pub amx_identifier: AmxIdent,
+    pub amx: Amx,
     pub amx_callback_index: AmxExecIdx,
 }
 
 impl Timer {
     pub fn was_scheduled_by_amx(&self, amx: &amx::Amx) -> bool {
-        self.amx_identifier == AmxIdent::from(amx.amx().as_ptr())
+        self.amx.amx() == amx.amx()
     }
 
-    pub fn stack_callback_on_amx<'amx>(&self) -> Result<StackedCallback<'amx>, AmxError> {
-        // amx::get returns an invalid amx lifetime
-        let amx: &'amx Amx = amx::get(self.amx_identifier).ok_or(AmxError::NotFound)?;
+    pub fn stack_callback_on_amx(&self) -> Result<StackedCallback, AmxError> {
         self.passed_arguments
-            .push_onto_amx_stack(amx, self.amx_callback_index)
+            .push_onto_amx_stack(self.amx.clone(), self.amx_callback_index)
     }
 }

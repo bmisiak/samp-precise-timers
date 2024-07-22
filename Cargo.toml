@@ -11,13 +11,14 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-samp = { git = "https://github.com/bmisiak/samp-sdk.git", rev = "41e94ed94ee83667ff1055590d4ec6e3c290371b" }
+samp = { git = "https://github.com/bmisiak/samp-sdk.git", rev = "90285d9da04950a1af1f2dfcbb661b5619e8b487" }
 slab = "0.4.2"
 log = "0.4.6"
 fern = { version = "0.6", features = [] }
 fnv = "1.0.7"
 snafu = "0.8.0"
 durr = "2"
+ouroboros = "0.18.4"
 
 [profile.release]
 lto = true

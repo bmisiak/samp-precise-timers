@@ -1,10 +1,12 @@
 use std::{cell::RefCell, time::Instant};
 
 use fnv::FnvHashSet;
+use samp::error::AmxError;
 use slab::Slab;
 use snafu::{ensure, OptionExt, Snafu};
 
 use crate::{
+    amx_arguments::StackedCallback,
     schedule::{Repeat, Schedule},
     timer::Timer,
 };
@@ -96,7 +98,7 @@ pub(crate) fn remove_timers(predicate: impl Fn(&Timer) -> bool) {
 #[inline]
 pub(crate) fn reschedule_next_due_and_then<T>(
     now: Instant,
-    timer_manipulator: impl Fn(&Timer) -> T,
+    timer_manipulator: impl FnOnce(&Timer) -> T,
 ) -> Option<T> {
     STATE.with_borrow_mut(|State { timers, queue }| {
         let Some(scheduled @ &Schedule { key, .. }) = queue.last() else {
@@ -134,22 +136,19 @@ mod test {
     use std::ptr::null_mut;
 
     use durr::{now, Durr};
-    use samp::raw::types::AMX;
 
     use crate::schedule::Repeat::{DontRepeat, Every};
     use crate::scheduling::{State, STATE};
     use crate::Timer;
     use crate::{amx_arguments::VariadicAmxArguments, scheduling::reschedule_next_due_and_then};
-    use std::time::Instant;
 
     use super::{insert_and_schedule_timer, Schedule};
 
     fn empty_timer() -> Timer {
-        let amx_pointer: *mut AMX = null_mut();
         Timer {
             passed_arguments: VariadicAmxArguments::empty(),
             amx_callback_index: samp::consts::AmxExecIdx::Continue,
-            amx_identifier: amx_pointer.into(),
+            amx: samp::amx::Amx::new(null_mut(), 0),
         }
     }
 

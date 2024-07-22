@@ -1,9 +1,13 @@
 use samp::{
-    amx::Amx, args::Args, cell::UnsizedBuffer, consts::AmxExecIdx, error::AmxError,
+    amx::{Allocator, Amx},
+    args::Args,
+    cell::UnsizedBuffer,
+    consts::AmxExecIdx,
+    error::AmxError,
     prelude::AmxString,
 };
 use snafu::{ensure, OptionExt, ResultExt};
-use std::{convert::TryInto, num::TryFromIntError};
+use std::{convert::TryInto, num::TryFromIntError, pin::Pin};
 
 /// These are the types of arguments the plugin supports for passing on to the callback.
 #[derive(Debug, Clone)]
@@ -15,13 +19,16 @@ pub enum PassedArgument {
 
 /// A callback which MUST be executed.
 /// Its args are already on the AMX stack.
-#[must_use]
-pub(crate) struct StackedCallback<'amx> {
-    pub amx: &'amx Amx,
+#[ouroboros::self_referencing]
+pub(crate) struct StackedCallback {
+    pub amx: Amx,
+    #[borrows(amx)]
+    #[covariant]
+    pub allocator: Allocator<'this>,
     pub callback_idx: AmxExecIdx,
 }
-
-impl<'amx> StackedCallback<'amx> {
+/*
+impl StackedCallback {
     /// ### SAFETY:
     /// The `amx.exec()` here might call one of our natives
     /// such as `SetPreciseTimer` (`PreciseTimers::create`).
@@ -30,10 +37,11 @@ impl<'amx> StackedCallback<'amx> {
     /// To avoid aliasing, there MUST NOT be any
     /// active references to them when this is called.
     #[inline]
+    #[must_use]
     pub unsafe fn execute(self) -> Result<i32, AmxError> {
         self.amx.exec(self.callback_idx)
     }
-}
+}*/
 
 #[derive(Debug, Clone)]
 pub(crate) struct VariadicAmxArguments {
@@ -116,29 +124,36 @@ impl VariadicAmxArguments {
     }
 
     /// Push the arguments onto the AMX stack, in first-in-last-out order, i.e. reversed
-    pub fn push_onto_amx_stack<'amx>(
+    pub fn push_onto_amx_stack<'cb, 'amx: 'cb>(
         &self,
-        amx: &'amx Amx,
+        amx: Amx,
         callback_idx: AmxExecIdx,
-    ) -> Result<StackedCallback<'amx>, AmxError> {
-        let allocator = amx.allocator();
-        for param in self.inner.iter().rev() {
-            match param {
-                PassedArgument::PrimitiveCell(cell_value) => {
-                    amx.push(cell_value)?;
+    ) -> Result<StackedCallback, AmxError> {
+
+        Ok(StackedCallbackBuilder {
+            amx: amx.clone(),
+            callback_idx, 
+            allocator_builder: |amx| { 
+                let allocator = amx.allocator();
+                for param in self.inner.iter().rev() {
+                    match param {
+                        PassedArgument::PrimitiveCell(cell_value) => {
+                            amx.push(cell_value).unwrap();
+                        }
+                        PassedArgument::Str(bytes) => {
+                            let buffer = allocator.allot_buffer(bytes.len() + 1).unwrap();
+                            let amx_str = unsafe { AmxString::new(buffer, bytes) };
+                            amx.push(amx_str).unwrap();
+                        }
+                        PassedArgument::Array(array_cells) => {
+                            let amx_buffer = allocator.allot_array(array_cells.as_slice()).unwrap();
+                            amx.push(array_cells.len()).unwrap();
+                            amx.push(amx_buffer).unwrap();
+                        }
+                    }
                 }
-                PassedArgument::Str(bytes) => {
-                    let buffer = allocator.allot_buffer(bytes.len() + 1)?;
-                    let amx_str = unsafe { AmxString::new(buffer, bytes) };
-                    amx.push(amx_str)?;
-                }
-                PassedArgument::Array(array_cells) => {
-                    let amx_buffer = allocator.allot_array(array_cells.as_slice())?;
-                    amx.push(array_cells.len())?;
-                    amx.push(amx_buffer)?;
-                }
+                allocator
             }
-        }
-        Ok(StackedCallback { amx, callback_idx })
+        }.build())
     }
 }

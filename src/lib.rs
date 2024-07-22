@@ -7,10 +7,9 @@ use samp::amx::Amx;
 use samp::cell::AmxString;
 use samp::error::{AmxError, AmxResult};
 use samp::plugin::SampPlugin;
-use scheduling::{reschedule_timer, reschedule_next_due_and_then};
+use scheduling::{reschedule_next_due_and_then, reschedule_timer};
 
 use std::convert::TryFrom;
-use std::time::{Duration, Instant};
 use timer::Timer;
 mod amx_arguments;
 mod schedule;
@@ -45,7 +44,7 @@ impl PreciseTimers {
 
         let timer = Timer {
             passed_arguments,
-            amx_identifier: amx.amx().as_ptr().into(),
+            amx: amx.clone(),
             amx_callback_index: amx.find_public(&callback_name.to_string())?,
         };
         let key = insert_and_schedule_timer(timer, |key| Schedule {
@@ -125,7 +124,9 @@ impl SampPlugin for PreciseTimers {
             match callback {
                 Ok(stacked_callback) => {
                     // SAFETY: We are not holding any references to scheduling stores.
-                    if let Err(exec_err) = unsafe { stacked_callback.execute() } {
+                    if let Err(exec_err) = stacked_callback
+                        .with_amx(|amx| amx.exec(*stacked_callback.borrow_callback_idx()))
+                    {
                         error!("Error while executing timer: {exec_err}");
                     }
                 }
