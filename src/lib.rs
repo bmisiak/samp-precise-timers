@@ -124,9 +124,7 @@ impl SampPlugin for PreciseTimers {
             match callback {
                 Ok(stacked_callback) => {
                     // SAFETY: We are not holding any references to scheduling stores.
-                    if let Err(exec_err) = stacked_callback
-                        .with_amx(|amx| amx.exec(*stacked_callback.borrow_callback_idx()))
-                    {
+                    if let Err(exec_err) = stacked_callback.execute() {
                         error!("Error while executing timer: {exec_err}");
                     }
                 }
