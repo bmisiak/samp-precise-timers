@@ -1,7 +1,7 @@
 use samp::{
     amx::{Allocator, Amx},
     args::Args,
-    cell::UnsizedBuffer,
+    cell::{Ref, UnsizedBuffer},
     consts::AmxExecIdx,
     error::AmxError,
     prelude::AmxString,
@@ -25,7 +25,6 @@ pub(crate) struct StackedCallback {
     #[borrows(amx)]
     #[not_covariant]
     pub allocator: Allocator<'this>,
-    #[borrows(amx)]
     pub callback_idx: AmxExecIdx,
 }
 
@@ -112,11 +111,12 @@ impl VariadicAmxArguments {
                 b'a' => PassedArgument::Array({
                     ensure!(matches!(letters.next(), Some(b'i' | b'A')), MissingArrayLength);
                     let buffer: UnsizedBuffer = args.next().context(MissingArg)?;
-                    let length = args.next::<i32>().context(MissingArg)?.try_into().context(InvalidArrayLength)?;
+                    let length_ref = *args.next::<Ref<i32>>().context(MissingArg)?;
+                    let length = length_ref.try_into().context(InvalidArrayLength)?;
                     let sized_buffer = buffer.into_sized_buffer(length);
                     sized_buffer.as_slice().to_vec()
                 }),
-                _ => PassedArgument::PrimitiveCell(args.next::<i32>().context(MissingArg)?),
+                _ => PassedArgument::PrimitiveCell(*args.next::<Ref<i32>>().context(MissingArg)?),
             });
         }
         Ok(Self {
@@ -150,6 +150,6 @@ impl VariadicAmxArguments {
                 }
             }
             Ok(allocator)
-        }, |_amx| Ok(callback_idx))
+        }, callback_idx)
     }
 }
