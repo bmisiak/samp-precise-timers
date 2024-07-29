@@ -2,14 +2,17 @@
 use amx_arguments::VariadicAmxArguments;
 
 use log::{error, info};
-
 use samp::amx::Amx;
+use samp::args::Args;
 use samp::cell::AmxString;
+use samp::consts::Supports;
 use samp::error::{AmxError, AmxResult};
-use samp::plugin::SampPlugin;
 use scheduling::{reschedule_next_due_and_then, reschedule_timer};
+use std::io::Write;
 
 use std::convert::TryFrom;
+use std::ffi::CString;
+use std::ptr::NonNull;
 use std::time::{Duration, Instant};
 use timer::Timer;
 mod amx_arguments;
@@ -75,85 +78,136 @@ impl PreciseTimers {
         }
         Ok(1)
     }
-
-    /// This function is called from PAWN via the C foreign function interface.
-    /// Returns 0 if the timer does not exist, 1 if removed.
-    ///  ```
-    /// native ResetPreciseTimer(timer_number, const interval, const bool:repeat)
-    /// ```
-    #[samp::native(name = "ResetPreciseTimer")]
-    pub fn reset(
-        &self,
-        _: &Amx,
-        timer_number: usize,
-        interval: i32,
-        repeat: bool,
-    ) -> AmxResult<i32> {
-        let key = timer_number - 1;
-        let interval = u64::try_from(interval)
-            .map_err(|_| AmxError::Params)
-            .map(Duration::from_millis)?;
-
-        let schedule = Schedule {
-            key,
-            next_trigger: Instant::now() + interval,
-            repeat: if repeat { Every(interval) } else { DontRepeat },
-        };
-        if let Err(error) = reschedule_timer(key, schedule) {
-            error!("{error}");
-            return Ok(0);
-        }
-        Ok(1)
-    }
 }
 
-impl SampPlugin for PreciseTimers {
-    fn on_load(&self) {
-        info!("samp-precise-timers v3 (c) Brian Misiak loaded correctly.");
+/// This function is called from PAWN via the C foreign function interface.
+/// Returns 0 if the timer does not exist, 1 if removed.
+///  ```
+/// native ResetPreciseTimer(timer_number, const interval, const bool:repeat)
+/// ```
+extern "C" fn reset_precise_timer(amx: *mut AMX, args: *mut i32) -> i32 {
+    let mut args = get_args(amx, args);
+    let (Some(timer_number), Some(interval), Some(repeat)) = (
+        args.next::<usize>(),
+        args.next::<i32>(),
+        args.next::<bool>(),
+    ) else {
+        return 0;
+    };
+    let Ok(interval) = u64::try_from(interval).map(Duration::from_millis) else {
+        return 0;
+    };
+    let key = timer_number - 1;
+    let schedule = Schedule {
+        key,
+        next_trigger: Instant::now() + interval,
+        repeat: if repeat { Every(interval) } else { DontRepeat },
+    };
+    if let Err(error) = reschedule_timer(key, schedule) {
+        error!("{error}");
+        return AmxError::Params as i32;
     }
+    1
+}
 
-    fn on_amx_unload(&self, unloaded_amx: &Amx) {
-        remove_timers(|timer| timer.was_scheduled_by_amx(unloaded_amx));
-    }
+use samp::raw::types::{AMX, AMX_NATIVE_INFO};
+type SampLogprintf = unsafe extern "C" fn(format: *const std::os::raw::c_char, ...);
+type AmxCallPublic = unsafe extern "C" fn(szFunctionName: *const std::os::raw::c_char) -> i32;
+#[repr(C)]
+struct SampServerData {
+    logprintf: *const SampLogprintf,         // Offset 0x00
+    _padding1: [u8; 0x10 - 0x08],            // Padding to reach 0x10
+    amx_exports: *const std::ffi::c_void,    // Offset 0x10
+    amx_callpublic_fs: *const AmxCallPublic, // Offset 0x11
+    amx_callpublic_gm: *const AmxCallPublic, // Offset 0x12
+}
 
-    #[allow(clippy::inline_always)]
-    #[inline(always)]
-    fn process_tick(&self) {
-        let now = Instant::now();
+thread_local! {
+    static SERVER_DATA: std::cell::OnceCell<NonNull<SampServerData>> = std::cell::OnceCell::new();
+}
 
-        while let Some(callback) = reschedule_next_due_and_then(now, Timer::stack_callback_on_amx) {
-            match callback {
-                Ok(stacked_callback) => {
-                    // SAFETY: We are not holding any references to scheduling stores.
-                    if let Err(exec_err) = unsafe { stacked_callback.execute() } {
-                        error!("Error while executing timer: {exec_err}");
-                    }
-                }
-                Err(stacking_err) => error!("Failed to stack callback: {stacking_err}"),
+fn get_amx_exports() -> *const std::ffi::c_void {
+    SERVER_DATA.with(|cell| {
+        let data = cell.get().expect("SERVER_DATA should be set");
+        unsafe { data.as_ref() }.amx_exports
+    })
+}
+
+fn amx_from_ptr(amx_ptr: *mut AMX) -> Amx {
+    Amx::new(amx_ptr, get_amx_exports() as usize)
+}
+fn get_args<'amx>(amx: *mut AMX, args: *mut i32) -> Args<'amx> {
+    Args::new(&amx_from_ptr(amx), args)
+}
+
+#[no_mangle]
+pub extern "system" fn Load(server_data: NonNull<SampServerData>) -> i32 {
+    let samp_logprintf = unsafe { *server_data.as_ref().logprintf };
+    SERVER_DATA
+        .with(|cell| cell.set(server_data))
+        .expect("Server data should be unset when the plugin Load()s.");
+
+    fern::Dispatch::new()
+        .chain(fern::Output::call(|record| {
+            let level = record.level();
+            let message = record.args();
+            let mut msg = vec![];
+            write!(&mut msg, "samp-precise-timers {level}: {message}\0");
+            match CString::from_vec_with_nul(msg) {
+                Ok(cstr) => samp_logprintf(cstr.as_ptr()),
+                Err(_) => (),
             }
+        }))
+        .apply()
+        .unwrap();
+    info!("samp-precise-timers v3 (c) Brian Misiak loaded correctly.");
+    return 1;
+}
+
+#[no_mangle]
+pub extern "system" fn AmxLoad(amx_ptr: *mut AMX) {
+    let amx = amx_from_ptr(amx_ptr);
+
+    let natives = [
+        AMX_NATIVE_INFO {
+            name: c"ResetPreciseTimer".as_ptr(),
+            func: reset_precise_timer,
+        },
+        AMX_NATIVE_INFO {
+            name: c"ResetPreciseTimer".as_ptr(),
+            func: reset_precise_timer,
+        },
+        AMX_NATIVE_INFO {
+            name: c"ResetPreciseTimer".as_ptr(),
+            func: reset_precise_timer,
+        },
+    ];
+
+    amx.register(&natives).unwrap();
+}
+
+#[no_mangle]
+pub extern "system" fn AmxUnload(unloaded_amx: NonNull<AMX>) {
+    remove_timers(|timer| timer.was_scheduled_by_amx(unloaded_amx));
+}
+
+#[no_mangle]
+pub extern "system" fn Supports() -> u32 {
+    return (Supports::AMX_NATIVES | Supports::VERSION | Supports::PROCESS_TICK).bits();
+}
+
+#[no_mangle]
+pub extern "system" fn ProcessTick() {
+    let now = Instant::now();
+    while let Some(callback) = reschedule_next_due_and_then(now, Timer::stack_callback_on_amx) {
+        match callback {
+            Ok(stacked_callback) => {
+                // SAFETY: We are not holding any references to scheduling stores.
+                if let Err(exec_err) = unsafe { stacked_callback.execute() } {
+                    error!("Error while executing timer: {exec_err}");
+                }
+            }
+            Err(stacking_err) => error!("Failed to stack callback: {stacking_err}"),
         }
     }
 }
-
-samp::initialize_plugin!(
-    natives: [
-        PreciseTimers::delete,
-        PreciseTimers::create,
-        PreciseTimers::reset,
-    ],
-    {
-        samp::plugin::enable_process_tick();
-
-        let samp_logprintf = samp::plugin::logger().level(log::LevelFilter::Info);
-
-        let _ = fern::Dispatch::new()
-            .format(|out, message, record| {
-                let level = record.level();
-                out.finish(format_args!("samp-precise-timers {level}: {message}"));
-            })
-            .chain(samp_logprintf)
-            .apply();
-
-        PreciseTimers
-    }
-);
