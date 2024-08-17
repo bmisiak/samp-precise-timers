@@ -1,6 +1,5 @@
-use std::{cell::RefCell, time::Instant};
+use std::{cell::RefCell, rc::Rc, time::Instant};
 
-use fnv::FnvHashSet;
 use slab::Slab;
 use snafu::{ensure, OptionExt, Snafu};
 
@@ -9,11 +8,17 @@ use crate::{
     timer::Timer,
 };
 
+struct TimerState {
+    timer: Timer,
+    schedule: RefCell<Schedule>,
+    key: usize,
+}
+
 struct State {
     /// A slotmap of timers. Stable keys.
-    timers: Slab<Timer>,
+    timers: Slab<Rc<TimerState>>,
     /// Always sorted queue of timers. Easy O(1) peeking and popping of the next scheduled timer.
-    queue: Vec<Schedule>,
+    queue: Vec<Rc<TimerState>>,
 }
 
 thread_local! {
@@ -35,10 +40,17 @@ pub(crate) fn insert_and_schedule_timer(
     get_schedule_based_on_key: impl FnOnce(usize) -> Schedule,
 ) -> usize {
     STATE.with_borrow_mut(|State { timers, queue }| {
-        let key = timers.insert(timer);
+        let entry = timers.vacant_entry();
+        let key = entry.key();
         let schedule = get_schedule_based_on_key(key);
-        let new_position = queue.partition_point(|s| s < &schedule);
-        queue.insert(new_position, schedule);
+        let rc = Rc::new(TimerState {
+            timer,
+            schedule: RefCell::new(schedule),
+            key,
+        });
+        entry.insert(Rc::clone(&rc));
+        let new_position = queue.partition_point(|s| *s.schedule.borrow() < schedule);
+        queue.insert(new_position, rc);
         key
     })
 }
@@ -58,9 +70,8 @@ pub(crate) fn reschedule_timer(key: usize, new_schedule: Schedule) -> Result<(),
             .iter()
             .position(|s| s.key == key)
             .context(TimerNotInQueue)?;
-        let new_index = queue.partition_point(|s| s < &new_schedule);
-        queue[current_index].next_trigger = new_schedule.next_trigger;
-        queue[current_index].repeat = new_schedule.repeat;
+        let new_index = queue.partition_point(|s| *s.schedule.borrow() < new_schedule);
+        queue[current_index].schedule.replace(new_schedule);
         if new_index < current_index {
             queue[new_index..=current_index].rotate_right(1);
         } else if new_index > current_index {
@@ -72,18 +83,14 @@ pub(crate) fn reschedule_timer(key: usize, new_schedule: Schedule) -> Result<(),
 
 pub(crate) fn remove_timers(predicate: impl Fn(&Timer) -> bool) {
     STATE.with_borrow_mut(|State { timers, queue }| {
-        let mut removed_keys = FnvHashSet::default();
-        queue.retain(|&Schedule { key, .. }| {
-            if predicate(&timers[key]) {
-                removed_keys.insert(key);
+        queue.retain(|timer_state| {
+            if predicate(&timer_state.timer) {
+                timers.remove(timer_state.key);
                 false
             } else {
                 true
             }
         });
-        for key in removed_keys {
-            timers.remove(key);
-        }
     });
 }
 
@@ -99,32 +106,40 @@ pub(crate) fn reschedule_next_due_and_then<T>(
     timer_manipulator: impl FnOnce(&Timer) -> T,
 ) -> Option<T> {
     STATE.with_borrow_mut(|State { timers, queue }| {
-        let Some(scheduled @ &Schedule { key, .. }) = queue.last() else {
-            return None;
-        };
-        if scheduled.next_trigger > now {
-            return None;
-        }
+        let (key, repeat, timer) = {
+            let Some(coming_up) = queue.last() else {
+                return None;
+            };
+            let schedule = coming_up.schedule.borrow();
+            let next_trigger = schedule.next_trigger;
 
-        if let Repeat::Every(interval) = scheduled.repeat {
+            if next_trigger > now {
+                return None;
+            }
+            (coming_up.key, schedule.repeat, &coming_up.timer)
+        };
+        if let Repeat::Every(interval) = repeat {
             let next_trigger = now + interval;
             let old_position = queue.len() - 1;
-            let new_position = queue.partition_point(|s| s.next_trigger >= next_trigger);
-            queue[old_position].next_trigger = next_trigger;
+            let new_position =
+                queue.partition_point(|s| s.schedule.borrow().next_trigger >= next_trigger);
+            queue[old_position].schedule.borrow_mut().next_trigger = next_trigger;
+
+            let result = timer_manipulator(timer);
+
             if new_position < old_position {
                 queue[new_position..].rotate_right(1);
             } else {
                 debug_assert_eq!(new_position, old_position);
             }
 
-            let timer = timers.get_mut(key).expect("due timer should be in slab");
-            Some(timer_manipulator(timer))
+            Some(result)
         } else {
             let descheduled = queue.pop().expect("due timer should be in queue");
-            assert_eq!(descheduled.key, key);
+            debug_assert_eq!(key, descheduled.key);
+            timers.remove(key);
 
-            let timer = timers.remove(key);
-            Some(timer_manipulator(&timer))
+            Some(timer_manipulator(&descheduled.timer))
         }
     })
 }

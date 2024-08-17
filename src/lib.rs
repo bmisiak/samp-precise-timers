@@ -47,8 +47,7 @@ impl PreciseTimers {
             amx: amx.clone(),
             amx_callback_index: amx.find_public(&callback_name.to_string())?,
         };
-        let key = insert_and_schedule_timer(timer, |key| Schedule {
-            key,
+        let key = insert_and_schedule_timer(timer, |_key| Schedule {
             next_trigger: now() + interval,
             repeat: if repeat { Every(interval) } else { DontRepeat },
         });
@@ -94,7 +93,6 @@ impl PreciseTimers {
             .milliseconds();
 
         let schedule = Schedule {
-            key,
             next_trigger: now() + interval,
             repeat: if repeat { Every(interval) } else { DontRepeat },
         };

@@ -6,7 +6,7 @@ use samp::{
     error::AmxError,
 };
 
-/// The Timer struct represents a single scheduled timer
+/// The AmxCallback struct represents how to call the amx
 #[derive(Debug, Clone)]
 pub(crate) struct Timer {
     pub passed_arguments: VariadicAmxArguments,
