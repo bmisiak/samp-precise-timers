@@ -15,7 +15,6 @@ mod amx_arguments;
 mod schedule;
 mod scheduling;
 mod timer;
-use schedule::Repeat::{DontRepeat, Every};
 use schedule::Schedule;
 use scheduling::{delete_timer, insert_and_schedule_timer, remove_timers};
 
@@ -49,7 +48,7 @@ impl PreciseTimers {
         };
         let key = insert_and_schedule_timer(timer, |_key| Schedule {
             next_trigger: now() + interval,
-            repeat: if repeat { Every(interval) } else { DontRepeat },
+            repeat: if repeat { Some(interval) } else { None },
         });
         // The timer's slot in Slab<> incresed by 1, so that 0 signifies an invalid timer in PAWN
         let timer_number = key
@@ -94,7 +93,7 @@ impl PreciseTimers {
 
         let schedule = Schedule {
             next_trigger: now() + interval,
-            repeat: if repeat { Every(interval) } else { DontRepeat },
+            repeat: if repeat { Some(interval) } else { None },
         };
         if let Err(error) = reschedule_timer(key, schedule) {
             error!("{error}");

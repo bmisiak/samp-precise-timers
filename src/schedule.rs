@@ -1,22 +1,16 @@
 use std::time::Duration;
 use std::time::Instant;
 
-#[derive(Copy, Clone, Debug)]
-pub(crate) enum Repeat {
-    Every(Duration),
-    DontRepeat,
-}
-
 /// A struct defining when a timer gets triggered
 #[derive(Copy, Clone)]
 pub(crate) struct Schedule {
-    pub repeat: Repeat,
+    pub repeat: Option<Duration>,
     pub next_trigger: Instant,
 }
 
 impl std::fmt::Debug for Schedule {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Repeat::Every(interval) = self.repeat {
+        if let Some(interval) = self.repeat {
             f.write_fmt(format_args!(
                 "[next_trigger in {:?}, repeat {:?}]",
                 self.next_trigger - Instant::now(),

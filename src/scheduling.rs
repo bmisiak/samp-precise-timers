@@ -1,22 +1,24 @@
-use std::{cell::RefCell, rc::Rc, time::Instant};
-
-use slab::Slab;
-use snafu::{ensure, OptionExt, Snafu};
-
-use crate::{
-    schedule::{Repeat, Schedule},
-    timer::Timer,
+use std::{
+    cell::{Cell, RefCell},
+    rc::{Rc, Weak},
+    time::Instant,
 };
 
+use slab::Slab;
+use snafu::{ensure, Snafu};
+
+use crate::{schedule::Schedule, timer::Timer};
+
+#[derive(Debug)]
 struct TimerState {
     timer: Timer,
-    schedule: RefCell<Schedule>,
+    schedule: Cell<Schedule>,
     key: usize,
 }
 
 struct State {
     /// A slotmap of timers. Stable keys.
-    timers: Slab<Rc<TimerState>>,
+    timers: Slab<Weak<TimerState>>,
     /// Always sorted queue of timers. Easy O(1) peeking and popping of the next scheduled timer.
     queue: Vec<Rc<TimerState>>,
 }
@@ -43,13 +45,10 @@ pub(crate) fn insert_and_schedule_timer(
         let entry = timers.vacant_entry();
         let key = entry.key();
         let schedule = get_schedule_based_on_key(key);
-        let rc = Rc::new(TimerState {
-            timer,
-            schedule: RefCell::new(schedule),
-            key,
-        });
-        entry.insert(Rc::clone(&rc));
-        let new_position = queue.partition_point(|s| *s.schedule.borrow() < schedule);
+        let new_position = queue.partition_point(|s| s.schedule.get() < schedule);
+        let schedule = Cell::new(schedule);
+        let rc = Rc::new(TimerState { timer, schedule, key });
+        entry.insert(Rc::downgrade(&rc));
         queue.insert(new_position, rc);
         key
     })
@@ -65,17 +64,18 @@ pub(crate) fn delete_timer(timer_key: usize) -> Result<(), TriggeringError> {
 }
 
 pub(crate) fn reschedule_timer(key: usize, new_schedule: Schedule) -> Result<(), TriggeringError> {
-    STATE.with_borrow_mut(|State { queue, .. }| {
-        let current_index = queue
-            .iter()
-            .position(|s| s.key == key)
-            .context(TimerNotInQueue)?;
-        let new_index = queue.partition_point(|s| *s.schedule.borrow() < new_schedule);
-        queue[current_index].schedule.replace(new_schedule);
-        if new_index < current_index {
-            queue[new_index..=current_index].rotate_right(1);
-        } else if new_index > current_index {
-            queue[current_index..=new_index].rotate_left(1);
+    STATE.with_borrow_mut(|State { queue, timers }| {
+        let old_state = timers[key].upgrade().unwrap();
+        let old_index = queue
+            .binary_search_by_key(&old_state.schedule.get(), |ts| ts.schedule.get())
+            .unwrap();
+
+        let new_index = queue.partition_point(|s| s.schedule.get() < new_schedule);
+        queue[old_index].schedule.replace(new_schedule);
+        if new_index < old_index {
+            queue[new_index..=old_index].rotate_right(1);
+        } else if new_index > old_index {
+            queue[old_index..=new_index].rotate_left(1);
         }
         Ok(())
     })
@@ -103,43 +103,35 @@ pub(crate) fn remove_timers(predicate: impl Fn(&Timer) -> bool) {
 #[inline]
 pub(crate) fn reschedule_next_due_and_then<T>(
     now: Instant,
-    timer_manipulator: impl FnOnce(&Timer) -> T,
+    stack_callback: impl FnOnce(&Timer) -> T,
 ) -> Option<T> {
     STATE.with_borrow_mut(|State { timers, queue }| {
-        let (key, repeat, timer) = {
-            let Some(coming_up) = queue.last() else {
-                return None;
-            };
-            let schedule = coming_up.schedule.borrow();
-            let next_trigger = schedule.next_trigger;
+        let next_up = queue.last()?;
+        let Schedule { next_trigger, repeat } = next_up.schedule.get();
+        if next_trigger > now {
+            return None;
+        }
+        if let Some(interval) = repeat {
+            let stacked_callback = stack_callback(&next_up.timer);
 
-            if next_trigger > now {
-                return None;
-            }
-            (coming_up.key, schedule.repeat, &coming_up.timer)
-        };
-        if let Repeat::Every(interval) = repeat {
             let next_trigger = now + interval;
-            let old_position = queue.len() - 1;
-            let new_position =
-                queue.partition_point(|s| s.schedule.borrow().next_trigger >= next_trigger);
-            queue[old_position].schedule.borrow_mut().next_trigger = next_trigger;
+            let new_schedule = Schedule { next_trigger, repeat };
+            let old_position = queue.len() - 1; // next timer is at the end of the queue
+            let new_position = queue.partition_point(|s| s.schedule.get() >= new_schedule);
 
-            let result = timer_manipulator(timer);
+            next_up.schedule.replace(new_schedule);
 
             if new_position < old_position {
                 queue[new_position..].rotate_right(1);
             } else {
                 debug_assert_eq!(new_position, old_position);
             }
-
-            Some(result)
+            Some(stacked_callback)
         } else {
-            let descheduled = queue.pop().expect("due timer should be in queue");
-            debug_assert_eq!(key, descheduled.key);
-            timers.remove(key);
+            let unscheduled = queue.pop().expect("due timer should be in queue");
+            timers.remove(unscheduled.key);
 
-            Some(timer_manipulator(&descheduled.timer))
+            Some(stack_callback(&unscheduled.timer))
         }
     })
 }
@@ -150,7 +142,6 @@ mod test {
 
     use durr::{now, Durr};
 
-    use crate::schedule::Repeat::{DontRepeat, Every};
     use crate::scheduling::{State, STATE};
     use crate::Timer;
     use crate::{amx_arguments::VariadicAmxArguments, scheduling::reschedule_next_due_and_then};
@@ -169,21 +160,19 @@ mod test {
 
     fn every_1s(key: usize) -> Schedule {
         Schedule {
-            key,
             next_trigger: now() + (key as u64).seconds(),
-            repeat: Every(1.seconds()),
+            repeat: Some(1.seconds()),
         }
     }
 
     fn dont_repeat(key: usize) -> Schedule {
         Schedule {
-            key,
             next_trigger: now() + (key as u64).seconds(),
-            repeat: DontRepeat,
+            repeat: None,
         }
     }
 
-    fn timer_keys(q: &Vec<Schedule>) -> Vec<usize> {
+    fn timer_keys(q: &Vec<std::rc::Rc<super::TimerState>>) -> Vec<usize> {
         dbg!(q);
         q.iter().map(|s| s.key).collect()
     }
