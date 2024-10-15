@@ -4,18 +4,12 @@
     "repo": "samp-precise-timers",
     "resources": [
         {
-            "name": "^samp-precise-timers-(.*).zip$",
-            "platform": "linux",
-            "archive": true,
-            "includes": ["include"],
-            "plugins": ["plugins/samp-precise-timers.so"]
+            "name": "samp-precise-timers.so$",
+            "platform": "linux"
         },
         {
-            "name": "^samp-precise-timers-(.*).zip$",
-            "platform": "windows",
-            "archive": true,
-            "includes": ["include"],
-            "plugins": ["plugins/samp-precise-timers.dll"]
+            "name": "samp-precise-timers.dll$",
+            "platform": "windows"
         }
     ],
     "runtime": {
