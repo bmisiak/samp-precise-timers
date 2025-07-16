@@ -30,3 +30,12 @@ native ResetPreciseTimer(const timer_number, const interval, const repeat);
     # DeletePreciseTimer returns 1 if the timer existed or 0 on failure.
 */
 native DeletePreciseTimer(const timer_number);
+
+/*
+    # IsValidPreciseTimer returns 1 if the timer is valid and exists, 0 otherwise.
+        Returns 0 if:
+        - timer had already been removed
+        - timer_number is invalid (0 or negative)
+        - timer_number is not in the system
+*/
+native IsValidPreciseTimer(const timer_number);
