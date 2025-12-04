@@ -1,19 +1,58 @@
 use std::{
     cell::{Cell, RefCell},
+    fmt::{self, Formatter},
     rc::{Rc, Weak},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
+use durr::now;
 use slab::Slab;
 use snafu::{ensure, Snafu};
 
-use crate::{schedule::Schedule, timer::Timer};
+use crate::timer::Timer;
 
-#[derive(Debug)]
 struct TimerState {
     timer: Timer,
-    schedule: Cell<Schedule>,
+    repeat: Cell<Option<Duration>>,
+    next_trigger: Cell<Instant>,
     key: usize,
+}
+
+impl fmt::Debug for TimerState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        if let Some(interval) = self.repeat.get() {
+            f.write_fmt(format_args!(
+                "[next_trigger in {:?}, repeat {:?}]",
+                self.next_trigger.get() - now(),
+                interval
+            ))
+        } else {
+            f.write_fmt(format_args!(
+                "[next_trigger in {:?}, no repeat]",
+                self.next_trigger.get() - now(),
+            ))
+        }
+    }
+}
+
+impl PartialEq for TimerState {
+    fn eq(&self, other: &Self) -> bool {
+        self.next_trigger == other.next_trigger
+    }
+}
+
+impl Eq for TimerState {}
+
+impl PartialOrd for TimerState {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TimerState {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other.next_trigger.cmp(&self.next_trigger)
+    }
 }
 
 struct State {
@@ -25,8 +64,8 @@ struct State {
 
 thread_local! {
     static STATE: RefCell<State> = RefCell::new(State {
-        timers: Slab::with_capacity(1000),
-        queue: Vec::with_capacity(1000),
+        timers: Slab::with_capacity(1024),
+        queue: Vec::with_capacity(1024),
     })
 }
 
@@ -39,16 +78,22 @@ pub(crate) enum TriggeringError {
 
 pub(crate) fn insert_and_schedule_timer(
     timer: Timer,
-    get_schedule_based_on_key: impl FnOnce(usize) -> Schedule,
+    next_trigger: Instant,
+    repeat: Option<Duration>,
 ) -> usize {
     STATE.with_borrow_mut(|State { timers, queue }| {
-        let entry = timers.vacant_entry();
-        let key = entry.key();
-        let schedule = get_schedule_based_on_key(key);
-        let new_position = queue.partition_point(|s| s.schedule.get() < schedule);
-        let schedule = Cell::new(schedule);
-        let rc = Rc::new(TimerState { timer, schedule, key });
-        entry.insert(Rc::downgrade(&rc));
+        let slab_entry = timers.vacant_entry();
+        let key = slab_entry.key();
+        let rc = Rc::new(TimerState {
+            timer,
+            key,
+            next_trigger: Cell::new(next_trigger),
+            repeat: Cell::new(repeat),
+        });
+        slab_entry.insert(Rc::downgrade(&rc));
+
+        let new_position = queue.partition_point(|s| s.next_trigger.get() >= next_trigger);
+        dbg!(new_position);
         queue.insert(new_position, rc);
         key
     })
@@ -63,19 +108,20 @@ pub(crate) fn delete_timer(timer_key: usize) -> Result<(), TriggeringError> {
     })
 }
 
-pub(crate) fn reschedule_timer(key: usize, new_schedule: Schedule) -> Result<(), TriggeringError> {
-    STATE.with_borrow_mut(|State { queue, timers }| {
-        let old_state = timers[key].upgrade().unwrap();
-        let old_index = queue
-            .binary_search_by_key(&old_state.schedule.get(), |ts| ts.schedule.get())
-            .unwrap();
-
-        let new_index = queue.partition_point(|s| s.schedule.get() < new_schedule);
-        queue[old_index].schedule.replace(new_schedule);
-        if new_index < old_index {
-            queue[new_index..=old_index].rotate_right(1);
-        } else if new_index > old_index {
-            queue[old_index..=new_index].rotate_left(1);
+pub(crate) fn reschedule_timer(
+    key: usize,
+    next_trigger: Instant,
+    repeat: Option<Duration>,
+) -> Result<(), TriggeringError> {
+    STATE.with_borrow_mut(|State { queue, .. }| {
+        let current_index = queue.iter().position(|ts| ts.key == key).unwrap();
+        let new_index = queue.partition_point(|s| s.next_trigger.get() >= next_trigger);
+        queue[current_index].next_trigger.replace(next_trigger);
+        queue[current_index].repeat.replace(repeat);
+        if new_index < current_index {
+            queue[new_index..=current_index].rotate_right(1);
+        } else if new_index > current_index {
+            queue[current_index..=new_index].rotate_left(1);
         }
         Ok(())
     })
@@ -99,56 +145,49 @@ pub(crate) fn remove_timers(predicate: impl Fn(&Timer) -> bool) {
 ///    (which uses its data to push onto the amx stack)
 /// 3. Frees state.
 /// 4. Returns the result of the closure.
-/// `timer_manipulator` must not borrow state
+/// `stack_callback` must not borrow state
 #[inline]
-pub(crate) fn reschedule_next_due_and_then<T>(
+pub(crate) fn with_next_due_timer<T>(
     now: Instant,
-    stack_callback: impl FnOnce(&Timer) -> T,
+    timer_manipulator: impl FnOnce(&Timer) -> T,
 ) -> Option<T> {
     STATE.with_borrow_mut(|State { timers, queue }| {
         let next_up = queue.last()?;
-        let Schedule { next_trigger, repeat } = next_up.schedule.get();
-        if next_trigger > now {
+        if next_up.next_trigger.get() > now {
             return None;
         }
-        if let Some(interval) = repeat {
-            let stacked_callback = stack_callback(&next_up.timer);
+        if let Some(interval) = next_up.repeat.get() {
+            let stacked_callback = timer_manipulator(&next_up.timer);
 
             let next_trigger = now + interval;
-            let new_schedule = Schedule { next_trigger, repeat };
-            let old_position = queue.len() - 1; // next timer is at the end of the queue
-            let new_position = queue.partition_point(|s| s.schedule.get() >= new_schedule);
+            let new_position = queue.partition_point(|s| s.next_trigger.get() >= next_trigger);
 
-            next_up.schedule.replace(new_schedule);
-
-            if new_position < old_position {
-                queue[new_position..].rotate_right(1);
-            } else {
-                debug_assert_eq!(new_position, old_position);
-            }
+            next_up.next_trigger.replace(next_trigger);
+            queue[new_position..].rotate_right(1);
             Some(stacked_callback)
         } else {
             let unscheduled = queue.pop().expect("due timer should be in queue");
             timers.remove(unscheduled.key);
 
-            Some(stack_callback(&unscheduled.timer))
+            Some(timer_manipulator(&unscheduled.timer))
         }
     })
 }
 
 #[cfg(test)]
 mod test {
+    use std::fmt::Debug;
     use std::ptr::null_mut;
 
     use durr::{now, Durr};
 
     use crate::scheduling::{State, STATE};
     use crate::Timer;
-    use crate::{amx_arguments::VariadicAmxArguments, scheduling::reschedule_next_due_and_then};
+    use crate::{amx_arguments::VariadicAmxArguments, scheduling::with_next_due_timer};
 
-    use super::{insert_and_schedule_timer, Schedule};
+    use super::{insert_and_schedule_timer, TimerState};
 
-    fn empty_timer() -> Timer {
+    fn timer() -> Timer {
         Timer {
             passed_arguments: VariadicAmxArguments::empty(),
             amx_callback_index: samp::consts::AmxExecIdx::Continue,
@@ -158,39 +197,38 @@ mod test {
 
     fn noop(_timer: &Timer) {}
 
-    fn every_1s(key: usize) -> Schedule {
-        Schedule {
-            next_trigger: now() + (key as u64).seconds(),
-            repeat: Some(1.seconds()),
-        }
-    }
-
-    fn dont_repeat(key: usize) -> Schedule {
-        Schedule {
-            next_trigger: now() + (key as u64).seconds(),
-            repeat: None,
-        }
-    }
-
-    fn timer_keys(q: &Vec<std::rc::Rc<super::TimerState>>) -> Vec<usize> {
-        dbg!(q);
-        q.iter().map(|s| s.key).collect()
+    fn timer_keys(q: impl IntoIterator<Item: AsRef<TimerState>> + Debug) -> Vec<usize> {
+        dbg!(&q);
+        q.into_iter().map(|s| s.as_ref().key).collect()
     }
 
     #[test]
     fn hello() {
-        assert_eq!(reschedule_next_due_and_then(now(), noop), None);
-        let first = insert_and_schedule_timer(empty_timer(), every_1s);
-        let second = insert_and_schedule_timer(empty_timer(), every_1s);
-        let third = insert_and_schedule_timer(empty_timer(), every_1s);
-        let fourth = insert_and_schedule_timer(empty_timer(), dont_repeat);
+        let start = now();
+        assert_eq!(with_next_due_timer(start, noop), None);
+        let timers = [
+            insert_and_schedule_timer(timer(), start + 1.seconds(), Some(5.seconds())),
+            insert_and_schedule_timer(timer(), start + 2.seconds(), None),
+            insert_and_schedule_timer(timer(), start + 3.seconds(), Some(1.seconds())),
+            insert_and_schedule_timer(timer(), start + 4.seconds(), Some(1.seconds())),
+        ];
         STATE.with_borrow_mut(|&mut State { ref mut queue, .. }| {
-            assert_eq!(timer_keys(queue), [fourth, third, second, first]);
+            assert_eq!(
+                timer_keys(queue),
+                [timers[3], timers[2], timers[1], timers[0]]
+            );
         });
-        assert!(reschedule_next_due_and_then(now(), noop).is_some());
-        STATE.with_borrow_mut(|&mut State { ref mut queue, .. }| {
-            assert_eq!(timer_keys(queue), [fourth, third, first, second]);
+        assert!(with_next_due_timer(start + 1200.milliseconds(), noop).is_some());
+        STATE.with_borrow_mut(|state| {
+            assert_eq!(
+                timer_keys(&state.queue),
+                [timers[3], timers[2], timers[0], timers[1]]
+            )
         });
-        assert_eq!(reschedule_next_due_and_then(now(), noop), None);
+        assert_eq!(with_next_due_timer(start + 1200.milliseconds(), noop), None);
+        assert!(with_next_due_timer(start + 2100.milliseconds(), noop).is_some());
+        STATE.with_borrow_mut(|state| {
+            assert_eq!(timer_keys(&state.queue), [timers[3], timers[2], timers[0]])
+        });
     }
 }

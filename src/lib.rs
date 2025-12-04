@@ -7,7 +7,7 @@ use samp::amx::Amx;
 use samp::cell::AmxString;
 use samp::error::{AmxError, AmxResult};
 use samp::plugin::SampPlugin;
-use scheduling::{reschedule_next_due_and_then, reschedule_timer};
+use scheduling::{reschedule_timer, with_next_due_timer};
 
 use std::convert::TryFrom;
 use timer::Timer;
@@ -15,7 +15,6 @@ mod amx_arguments;
 mod schedule;
 mod scheduling;
 mod timer;
-use schedule::Schedule;
 use scheduling::{delete_timer, insert_and_schedule_timer, remove_timers};
 
 /// The plugin
@@ -46,10 +45,11 @@ impl PreciseTimers {
             amx: amx.clone(),
             amx_callback_index: amx.find_public(&callback_name.to_string())?,
         };
-        let key = insert_and_schedule_timer(timer, |_key| Schedule {
-            next_trigger: now() + interval,
-            repeat: if repeat { Some(interval) } else { None },
-        });
+        let key = insert_and_schedule_timer(
+            timer,
+            now() + interval,
+            if repeat { Some(interval) } else { None },
+        );
         // The timer's slot in Slab<> incresed by 1, so that 0 signifies an invalid timer in PAWN
         let timer_number = key
             .checked_add(1)
@@ -91,11 +91,11 @@ impl PreciseTimers {
             .map_err(|_| AmxError::Params)?
             .milliseconds();
 
-        let schedule = Schedule {
-            next_trigger: now() + interval,
-            repeat: if repeat { Some(interval) } else { None },
-        };
-        if let Err(error) = reschedule_timer(key, schedule) {
+        if let Err(error) = reschedule_timer(
+            key,
+            now() + interval,
+            if repeat { Some(interval) } else { None },
+        ) {
             error!("{error}");
             return Ok(0);
         }
@@ -117,10 +117,9 @@ impl SampPlugin for PreciseTimers {
     fn process_tick(&self) {
         let now = now();
 
-        while let Some(callback) = reschedule_next_due_and_then(now, Timer::stack_callback_on_amx) {
+        while let Some(callback) = with_next_due_timer(now, Timer::stack_callback_on_amx) {
             match callback {
                 Ok(stacked_callback) => {
-                    // SAFETY: We are not holding any references to scheduling stores.
                     if let Err(exec_err) = stacked_callback.execute() {
                         error!("Error while executing timer: {exec_err}");
                     }

@@ -6,8 +6,10 @@ use samp::{
     error::AmxError,
     prelude::AmxString,
 };
+use self_cell::self_cell;
 use snafu::{ensure, OptionExt, ResultExt};
-use std::{convert::TryInto, num::TryFromIntError};
+use std::convert::TryFrom;
+use std::num::TryFromIntError;
 
 /// These are the types of arguments the plugin supports for passing on to the callback.
 #[derive(Debug, Clone)]
@@ -17,29 +19,30 @@ pub enum PassedArgument {
     Array(Vec<i32>),
 }
 
-/// A callback which MUST be executed.
-/// Its args are already on the AMX stack.
-#[ouroboros::self_referencing]
-pub(crate) struct StackedCallback {
-    pub amx: Amx,
-    #[borrows(amx)]
-    #[not_covariant]
-    pub allocator: Allocator<'this>,
-    pub callback_idx: AmxExecIdx,
-}
+type CallbackIdxOnAmxAllocator<'a> = (Allocator<'a>, AmxExecIdx);
+self_cell!(
+    /// A callback which MUST be executed.
+    /// Its args are already on the AMX stack.
+    #[must_use]
+    pub(crate) struct StackedCallback {
+        owner: Amx,
+        #[not_covariant]
+        dependent: CallbackIdxOnAmxAllocator,
+    }
+);
 
 impl StackedCallback {
-    /// ### SAFETY:
-    /// The `amx.exec()` here might call one of our natives
-    /// such as `SetPreciseTimer` (`PreciseTimers::create`).
-    /// Those will try to acquire mutable access to
-    /// the scheduling store(s) e.g. `TIMERS` and `QUEUE`.
-    /// To avoid aliasing, there MUST NOT be any
-    /// active references to them when this is called.
-    /// This is currently enforced by using thread_local
+    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub fn execute(self) -> Result<i32, AmxError> {
-        self.with(|cb| cb.amx.exec(*cb.callback_idx))
+        // ### SAFETY:
+        // PAWN code executed by the `amx.exec()` here might
+        // end up calling one of our natives such as
+        // `SetPreciseTimer`.
+        // To avoid aliasing, there MUST NOT be any active
+        // mutable references to global state when this is called.
+        // This is currently enforced by using thread_local.
+        self.with_dependent(|amx, (_alloc, callback_idx)| amx.exec(*callback_idx))
     }
 }
 
@@ -111,8 +114,8 @@ impl VariadicAmxArguments {
                 b'a' => PassedArgument::Array({
                     ensure!(matches!(letters.next(), Some(b'i' | b'A')), MissingArrayLength);
                     let buffer: UnsizedBuffer = args.next().context(MissingArg)?;
-                    let length_ref = *args.next::<Ref<i32>>().context(MissingArg)?;
-                    let length = length_ref.try_into().context(InvalidArrayLength)?;
+                    let length_ref: Ref<i32> = args.next().context(MissingArg)?;
+                    let length = usize::try_from(*length_ref).context(InvalidArrayLength)?;
                     let sized_buffer = buffer.into_sized_buffer(length);
                     sized_buffer.as_slice().to_vec()
                 }),
@@ -130,8 +133,8 @@ impl VariadicAmxArguments {
         amx: Amx,
         callback_idx: AmxExecIdx,
     ) -> Result<StackedCallback, AmxError> {
-        StackedCallback::try_new(amx.clone(), |amx| { 
-            let allocator: Allocator = amx.allocator();
+        StackedCallback::try_new(amx.clone(), |amx| {
+            let allocator: Allocator<'_> = amx.allocator();
             for param in self.inner.iter().rev() {
                 match param {
                     PassedArgument::PrimitiveCell(cell_value) => {
@@ -149,7 +152,7 @@ impl VariadicAmxArguments {
                     }
                 }
             }
-            Ok(allocator)
-        }, callback_idx)
+            Ok((allocator, callback_idx))
+        })
     }
 }

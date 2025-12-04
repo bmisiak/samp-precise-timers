@@ -18,7 +18,7 @@ fern = { version = "0.6", features = [] }
 fnv = "1.0.7"
 snafu = "0.8.0"
 durr = "2"
-ouroboros = "0.18.4"
+self_cell = "1.2.1"
 
 [profile.release]
 lto = true
