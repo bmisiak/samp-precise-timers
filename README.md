@@ -1,6 +1,6 @@
 # samp-precise-timers ⌚
 
-Developed for [net4game.com](https://net4game.com) (RolePlay), this SA-MP plugin provides precise timers for the server. It is written in [Rust](https://rust-lang.org), a memory-safe language.
+Developed for [n4g.gg](https://n4g.gg) (RolePlay), this SA-MP plugin provides precise timers for the server. It is written in [Rust](https://rust-lang.org), a memory-safe language.
 
 ## Installation
 
