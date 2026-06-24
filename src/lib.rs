@@ -17,7 +17,7 @@ mod scheduling;
 mod timer;
 use schedule::Repeat::{DontRepeat, Every};
 use schedule::Schedule;
-use scheduling::{delete_timer, insert_and_schedule_timer, remove_timers};
+use scheduling::{delete_timer, insert_and_schedule_timer, remove_timers, STATE};
 
 /// The plugin
 struct PreciseTimers;
@@ -104,6 +104,21 @@ impl PreciseTimers {
         }
         Ok(1)
     }
+
+    #[samp::native(name = "IsValidPreciseTimer")]
+    pub fn is_valid(&self, _: &Amx, timer_number: i32) -> AmxResult<i32> {
+        if timer_number <= 0 {
+            return Ok(0);
+        }
+        
+        let key = (timer_number as usize).saturating_sub(1);
+        
+        let is_valid = STATE.with_borrow(|state| {
+            state.timers.contains(key)
+        });
+        
+        Ok(if is_valid { 1 } else { 0 })
+    }
 }
 
 impl SampPlugin for PreciseTimers {
@@ -139,6 +154,7 @@ samp::initialize_plugin!(
         PreciseTimers::delete,
         PreciseTimers::create,
         PreciseTimers::reset,
+        PreciseTimers::is_valid,
     ],
     {
         samp::plugin::enable_process_tick();
