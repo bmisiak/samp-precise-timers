@@ -65,6 +65,7 @@ dependencies = [
 [[package]]
 name = "samp"
 version = "0.2.0"
+source = "git+https://github.com/bmisiak/samp-sdk.git?rev=739524f00dc78282c8b545ac1f04d6fe79994efb#739524f00dc78282c8b545ac1f04d6fe79994efb"
 dependencies = [
  "fern",
  "samp-codegen",
@@ -74,6 +75,7 @@ dependencies = [
 [[package]]
 name = "samp-codegen"
 version = "0.2.0"
+source = "git+https://github.com/bmisiak/samp-sdk.git?rev=739524f00dc78282c8b545ac1f04d6fe79994efb#739524f00dc78282c8b545ac1f04d6fe79994efb"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -95,6 +97,7 @@ dependencies = [
 [[package]]
 name = "samp-sdk"
 version = "0.10.0"
+source = "git+https://github.com/bmisiak/samp-sdk.git?rev=739524f00dc78282c8b545ac1f04d6fe79994efb#739524f00dc78282c8b545ac1f04d6fe79994efb"
 dependencies = [
  "bitflags",
 ]

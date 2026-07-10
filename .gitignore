@@ -3,3 +3,4 @@ target
 .DS_Store
 .vscode
 build.rs
+scripts/test-integration-orbstack

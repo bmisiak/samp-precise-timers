@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly WORK="$ROOT/target/integration"
+readonly SERVER_URL="https://gta-multiplayer.cz/downloads/samp037svr_R2-2-1.tar.gz"
+readonly SERVER_SHA256="83b274c214aa42331fa147ded69278658816e8f4fdce6f285e3bcd0198e1e596"
+readonly COMPILER_REV="134ad7a836c581546665340aedb59efd4636e269"
+readonly SAMP_STDLIB_REV="8ffb055624308b25521665b60e78b5e6e6b3717f"
+readonly PAWN_STDLIB_REV="e96507d9a6ddaae5bb0f3ec31479ba805aeff964"
+
+log() { printf '[integration] %s\n' "$*"; }
+die() { printf '[integration] ERROR: %s\n' "$*" >&2; exit 1; }
+
+[[ "$(uname -s)" == Linux ]] || die "this script must run on Linux"
+[[ "$(uname -m)" == x86_64 ]] || die "the SA-MP server requires an Intel VM"
+
+install_system_dependencies() {
+    local missing=()
+    for command in curl git cmake make gcc; do
+        command -v "$command" >/dev/null || missing+=("$command")
+    done
+    if ! printf 'int main(void) { return 0; }\n' | gcc -m32 -x c - -o /tmp/precise-timers-m32-check 2>/dev/null; then
+        missing+=("32-bit C toolchain")
+    else
+        rm -f /tmp/precise-timers-m32-check
+    fi
+    if ((${#missing[@]})); then
+        command -v apt-get >/dev/null || die "missing tools (${missing[*]}) and apt-get is unavailable"
+        log "installing Ubuntu build dependencies"
+        sudo apt-get update
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            ca-certificates curl git cmake make gcc gcc-multilib libc6-dev-i386
+    fi
+}
+
+clone_at() {
+    local url=$1 revision=$2 destination=$3
+    if [[ ! -d "$destination/.git" ]]; then
+        git clone --filter=blob:none --no-checkout "$url" "$destination"
+    fi
+    git -C "$destination" fetch --depth=1 origin "$revision"
+    git -C "$destination" checkout --detach --force FETCH_HEAD
+}
+
+install_system_dependencies
+mkdir -p "$WORK"
+
+if ! command -v rustup >/dev/null; then
+    log "installing rustup"
+    curl --proto '=https' --tlsv1.2 -fsS https://sh.rustup.rs | sh -s -- -y --profile minimal
+fi
+export PATH="$HOME/.cargo/bin:$PATH"
+rustup target add i686-unknown-linux-gnu
+
+if [[ ! -x "$WORK/server/samp03svr" ]]; then
+    log "downloading pinned SA-MP 0.3.7 R2 server"
+    curl -fL "$SERVER_URL" -o "$WORK/server.tar.gz"
+    echo "$SERVER_SHA256  $WORK/server.tar.gz" | sha256sum --check --status || \
+        die "SA-MP archive checksum mismatch"
+    rm -rf "$WORK/server" "$WORK/samp03"
+    tar -xzf "$WORK/server.tar.gz" -C "$WORK"
+    mv "$WORK/samp03" "$WORK/server"
+fi
+
+if [[ ! -x "$WORK/pawn-compiler/build/pawncc" ]]; then
+    log "building pinned Pawn compiler"
+    clone_at https://github.com/pawn-lang/compiler.git "$COMPILER_REV" "$WORK/pawn-compiler"
+    cmake -S "$WORK/pawn-compiler/source/compiler" -B "$WORK/pawn-compiler/build" \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS=-m32
+    cmake --build "$WORK/pawn-compiler/build" --parallel
+fi
+
+clone_at https://github.com/pawn-lang/samp-stdlib.git "$SAMP_STDLIB_REV" "$WORK/samp-stdlib"
+clone_at https://github.com/pawn-lang/pawn-stdlib.git "$PAWN_STDLIB_REV" "$WORK/pawn-stdlib"
+
+log "running Rust unit tests"
+cargo test --manifest-path "$ROOT/Cargo.toml" --target i686-unknown-linux-gnu
+
+log "building 32-bit plugin"
+cargo build --manifest-path "$ROOT/Cargo.toml" --target i686-unknown-linux-gnu --release
+
+runtime="$WORK/runtime"
+rm -rf "$runtime"
+mkdir -p "$runtime/gamemodes" "$runtime/plugins" "$runtime/include"
+cp -a "$WORK/server/." "$runtime/"
+cp "$ROOT/target/i686-unknown-linux-gnu/release/libsamp_precise_timers.so" \
+    "$runtime/plugins/samp-precise-timers.so"
+cp "$ROOT/tests/integration.pwn" "$runtime/gamemodes/integration.pwn"
+cp "$ROOT/samp-precise-timers.inc" "$runtime/include/"
+cp "$WORK/samp-stdlib"/*.inc "$runtime/include/"
+cp "$WORK/pawn-stdlib"/*.inc "$runtime/include/"
+
+log "compiling integration gamemode"
+"$WORK/pawn-compiler/build/pawncc" \
+    "$runtime/gamemodes/integration.pwn" \
+    "-i$runtime/include" \
+    "-o$runtime/gamemodes/integration.amx"
+
+cat >"$runtime/server.cfg" <<'EOF'
+echo Executing integration test configuration.
+lanmode 1
+rcon_password precise-timers-integration
+maxplayers 1
+port 17777
+hostname precise timers integration test
+gamemode0 integration 1
+plugins samp-precise-timers.so
+announce 0
+query 0
+chatlogging 0
+EOF
+
+log "launching real SA-MP server"
+set +e
+(
+    cd "$runtime"
+    timeout --signal=TERM --kill-after=2s 10s ./samp03svr
+) 2>&1 | tee "$runtime/server-output.log"
+server_status=${PIPESTATUS[0]}
+set -e
+
+test_log="$runtime/server_log.txt"
+[[ -f "$test_log" ]] || die "SA-MP did not create server_log.txt; exit status was $server_status"
+if grep -q 'PRECISE_TIMERS_TEST_FAIL:' "$test_log"; then
+    die "gamemode reported a failure (see $test_log)"
+fi
+grep -q 'samp-precise-timers v3 .* loaded correctly' "$test_log" || \
+    die "plugin did not load (see $test_log)"
+grep -q 'PRECISE_TIMERS_TEST_PASS' "$test_log" || \
+    die "pass marker not found; server exit status was $server_status (see $test_log)"
+
+log "PASS: plugin natives and callback arguments worked in SA-MP 0.3.7 R2"

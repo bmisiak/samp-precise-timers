@@ -19,3 +19,10 @@ native SetPreciseTimer(const callback_name[], const interval, const repeat, cons
     # DeletePreciseTimer returns 1 if the timer existed or 0 on failure.
 */
 native DeletePreciseTimer(const timer_number);
+
+/*
+    # ResetPreciseTimer returns 1 if the timer existed or 0 on failure.
+        interval: milliseconds before the next callback.
+        repeat: true/false after the next callback.
+*/
+native ResetPreciseTimer(const timer_number, const interval, const repeat);

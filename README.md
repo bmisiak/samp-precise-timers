@@ -63,6 +63,16 @@ Then, enter the project directory and execute:
 cargo build --target=i686-pc-windows-msvc --release
 ```
 
+### Integration test
+
+The integration test builds the release plugin for 32-bit Linux, compiles a
+Pawn gamemode, launches SA-MP, and verifies the native calls and timer
+callbacks from the server log:
+
+```bash
+./scripts/test-integration-linux
+```
+
 ## Contributing
 
 If you like the code and would like to help out, feel free to submit a pull request. Let me know at bm+code@net4game.com if you would like to join our team. 👋
