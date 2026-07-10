@@ -1,26 +1,30 @@
-use crate::amx_arguments::{StackedCallback, VariadicAmxArguments};
+use crate::amx_arguments::VariadicAmxArguments;
 
-use samp::{
-    amx::{self, Amx},
-    consts::AmxExecIdx,
-    error::AmxError,
-};
+use samp::{amx::AmxHandle, consts::AmxExecIdx, error::AmxError};
 
-/// The AmxCallback struct represents how to call the amx
+/// The Timer struct represents a single scheduled callback
 #[derive(Debug, Clone)]
 pub(crate) struct Timer {
     pub passed_arguments: VariadicAmxArguments,
-    pub amx: Amx,
+    pub amx: AmxHandle,
     pub amx_callback_index: AmxExecIdx,
 }
 
 impl Timer {
-    pub fn was_scheduled_by_amx(&self, amx: &amx::Amx) -> bool {
-        self.amx.amx() == amx.amx()
-    }
-
-    pub fn stack_callback_on_amx(&self) -> Result<StackedCallback, AmxError> {
-        self.passed_arguments
-            .push_onto_amx_stack(self.amx.clone(), self.amx_callback_index)
+    /// Push the timer's arguments onto the AMX stack and execute the
+    /// callback. The callback may reenter our natives (e.g.
+    /// `DeletePreciseTimer`), so the caller must not hold any borrow of the
+    /// scheduling state.
+    ///
+    /// # Panics
+    /// When the scheduling script is no longer loaded — `on_amx_unload`
+    /// removes its timers, so a scheduled timer without its script is a bug.
+    pub fn fire(&self) -> Result<i32, AmxError> {
+        samp::amx::with(self.amx, |amx| {
+            amx.exec_with_args(self.amx_callback_index, |allocator| {
+                self.passed_arguments.push_onto_amx_stack(allocator)
+            })
+        })
+        .expect("scheduled timer must outlive its script")
     }
 }
