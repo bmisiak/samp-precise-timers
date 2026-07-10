@@ -104,14 +104,12 @@ fn reset(_amx: Amx, number: NonZeroUsize, interval: u32, repeat: bool) -> Result
     let interval = u64::from(interval).milliseconds();
     let repeat = validated_repeat(repeat, interval)?;
 
-    reschedule_timer(number.get() - 1, now() + interval, repeat)
-        .context(NoSuchTimer { number })?;
+    reschedule_timer(number.get() - 1, now() + interval, repeat).context(NoSuchTimer { number })?;
     Ok(1)
 }
 
 fn on_amx_unload(unloaded_amx: Amx) {
-    let unloaded = unloaded_amx.handle();
-    remove_timers(|timer| timer.amx == unloaded);
+    remove_timers(|timer| timer.amx == unloaded_amx.handle());
 }
 
 fn process_tick() {
@@ -134,7 +132,10 @@ mod test {
     #[test]
     fn zero_interval_is_only_valid_without_repeat() {
         assert!(validated_repeat(true, 0.milliseconds()).is_err());
-        assert!(matches!(validated_repeat(false, 0.milliseconds()), Ok(None)));
+        assert!(matches!(
+            validated_repeat(false, 0.milliseconds()),
+            Ok(None)
+        ));
         assert_eq!(
             validated_repeat(true, 5.milliseconds()).unwrap(),
             Some(5.milliseconds())

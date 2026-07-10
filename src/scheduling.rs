@@ -1,11 +1,9 @@
 use std::{
     cell::{Cell, RefCell},
-    fmt::{self, Formatter},
     rc::Rc,
     time::{Duration, Instant},
 };
 
-use durr::now;
 use slab::Slab;
 
 use crate::timer::Timer;
@@ -15,23 +13,6 @@ pub(crate) struct TimerState {
     repeat: Cell<Option<Duration>>,
     next_trigger: Cell<Instant>,
     key: usize,
-}
-
-impl fmt::Debug for TimerState {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        if let Some(interval) = self.repeat.get() {
-            f.write_fmt(format_args!(
-                "[next_trigger in {:?}, repeat {:?}]",
-                self.next_trigger.get() - now(),
-                interval
-            ))
-        } else {
-            f.write_fmt(format_args!(
-                "[next_trigger in {:?}, no repeat]",
-                self.next_trigger.get() - now(),
-            ))
-        }
-    }
 }
 
 impl PartialEq for TimerState {
@@ -60,8 +41,6 @@ struct State {
     timers: Slab<Rc<TimerState>>,
     /// Queue of timers sorted by descending `next_trigger`, so the next due
     /// timer is peekable and poppable at the back in O(1) every tick.
-    /// Timers with equal triggers are in reverse scheduling order: the
-    /// earliest-scheduled sits closest to the back and fires first (FIFO).
     queue: Vec<Rc<TimerState>>,
 }
 
@@ -163,8 +142,6 @@ pub(crate) fn next_due_timer(now: Instant) -> Option<Rc<TimerState>> {
 
 #[cfg(test)]
 mod test {
-    use std::fmt::Debug;
-
     use durr::{now, Durr};
 
     use crate::scheduling::{State, STATE};
@@ -181,7 +158,7 @@ mod test {
         }
     }
 
-    fn timer_keys(q: impl IntoIterator<Item: AsRef<TimerState>> + Debug) -> Vec<usize> {
+    fn timer_keys(q: impl IntoIterator<Item: AsRef<TimerState>>) -> Vec<usize> {
         q.into_iter().map(|s| s.as_ref().key).collect()
     }
 
