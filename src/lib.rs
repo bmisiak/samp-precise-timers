@@ -9,7 +9,7 @@ use samp::cell::AmxString;
 use samp::error::AmxError;
 use snafu::{OptionExt, ResultExt, Snafu};
 
-use std::convert::TryFrom;
+use std::num::NonZeroUsize;
 use std::time::Duration;
 use timer::Timer;
 mod amx_arguments;
@@ -24,22 +24,20 @@ use scheduling::{
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
 enum TimerError {
-    #[snafu(display("SetPreciseTimer expects a callback name as its first argument"))]
-    MissingCallbackName,
-    #[snafu(display("SetPreciseTimer expects an interval in milliseconds as its second argument"))]
-    MissingInterval,
-    #[snafu(display("the interval must be a non-negative number of milliseconds"))]
-    InvalidInterval,
-    #[snafu(display("SetPreciseTimer expects a bool:repeat as its third argument"))]
-    MissingRepeat,
+    #[snafu(display("SetPreciseTimer expects a callback name as its first argument: {source}"))]
+    MissingCallbackName { source: AmxError },
+    #[snafu(display("SetPreciseTimer expects a non-negative interval in milliseconds as its second argument: {source}"))]
+    MissingInterval { source: AmxError },
+    #[snafu(display("SetPreciseTimer expects a bool:repeat as its third argument: {source}"))]
+    MissingRepeat { source: AmxError },
     #[snafu(display("repeating timers must have an interval of at least 1ms"))]
     ZeroIntervalRepeat,
-    #[snafu(display("\"{name}\" is not a public function of the scheduling script"))]
+    #[snafu(display("\"{name}\" is not a public function of the scheduling script: {source}"))]
     CallbackNotFound { name: String, source: AmxError },
     #[snafu(transparent)]
     InvalidArguments { source: ArgError },
     #[snafu(display("timer number {number} does not exist"))]
-    NoSuchTimer { number: usize },
+    NoSuchTimer { number: NonZeroUsize },
     #[snafu(display("the timer number space is exhausted"))]
     TooManyTimers,
 }
@@ -63,11 +61,7 @@ fn validated_repeat(repeat: bool, interval: Duration) -> Result<Option<Duration>
 fn create(amx: Amx, mut args: samp::args::Args) -> Result<i32, TimerError> {
     // Get the basic, mandatory timer parameters
     let callback_name: AmxString = args.next_arg().context(MissingCallbackName)?;
-    let interval = args
-        .next_arg::<i32>()
-        .context(MissingInterval)
-        .and_then(|ms| u64::try_from(ms).ok().context(InvalidInterval))?
-        .milliseconds();
+    let interval = u64::from(args.next_arg::<u32>().context(MissingInterval)?).milliseconds();
     let repeat = validated_repeat(args.next_arg().context(MissingRepeat)?, interval)?;
     let passed_arguments = VariadicAmxArguments::from_amx_args(args)?;
 
@@ -95,9 +89,8 @@ fn create(amx: Amx, mut args: samp::args::Args) -> Result<i32, TimerError> {
 /// native DeletePreciseTimer(timer_number)
 /// ```
 #[samp::native(name = "DeletePreciseTimer")]
-fn delete(_amx: Amx, number: usize) -> Result<i32, TimerError> {
-    let key = number.checked_sub(1).context(NoSuchTimer { number })?;
-    delete_timer(key).ok().context(NoSuchTimer { number })?;
+fn delete(_amx: Amx, number: NonZeroUsize) -> Result<i32, TimerError> {
+    delete_timer(number.get() - 1).context(NoSuchTimer { number })?;
     Ok(1)
 }
 
@@ -107,20 +100,12 @@ fn delete(_amx: Amx, number: usize) -> Result<i32, TimerError> {
 /// native ResetPreciseTimer(timer_number, const interval, const bool:repeat)
 /// ```
 #[samp::native(name = "ResetPreciseTimer")]
-fn reset(_amx: Amx, timer_number: usize, interval: i32, repeat: bool) -> Result<i32, TimerError> {
-    let no_such_timer = NoSuchTimer {
-        number: timer_number,
-    };
-    let key = timer_number.checked_sub(1).context(no_such_timer)?;
-    let interval = u64::try_from(interval)
-        .ok()
-        .context(InvalidInterval)?
-        .milliseconds();
+fn reset(_amx: Amx, number: NonZeroUsize, interval: u32, repeat: bool) -> Result<i32, TimerError> {
+    let interval = u64::from(interval).milliseconds();
     let repeat = validated_repeat(repeat, interval)?;
 
-    reschedule_timer(key, now() + interval, repeat)
-        .ok()
-        .context(no_such_timer)?;
+    reschedule_timer(number.get() - 1, now() + interval, repeat)
+        .context(NoSuchTimer { number })?;
     Ok(1)
 }
 

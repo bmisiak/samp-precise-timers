@@ -1,20 +1,21 @@
 use samp::{
     amx::Allocator,
     args::Args,
-    cell::{Ref, UnsizedBuffer},
+    cell::{RawCell, Ref, UnsizedBuffer},
     error::AmxError,
     prelude::AmxString,
 };
-use snafu::{ensure, OptionExt, ResultExt};
-use std::convert::TryFrom;
-use std::num::TryFromIntError;
+use snafu::{ensure, ResultExt};
 
-/// These are the types of arguments the plugin supports for passing on to the callback.
+/// These are the types of arguments the plugin supports for passing on to
+/// the callback. Cell values are kept as uninterpreted [`RawCell`]s: we only
+/// round-trip them back onto the AMX stack, so `Float:`/`bool:` tags don't
+/// matter.
 #[derive(Debug, Clone)]
 pub enum PassedArgument {
-    PrimitiveCell(i32),
+    PrimitiveCell(RawCell),
     Str(Vec<u8>),
-    Array(Vec<i32>),
+    Array(Vec<RawCell>),
 }
 
 #[derive(Debug, Clone)]
@@ -31,21 +32,14 @@ pub(crate) enum ArgError {
         expected: usize,
         letters: Vec<u8>,
     },
-    MissingTypeLetters,
+    #[snafu(display("missing the types-of-arguments string: {source}"))]
+    MissingTypeLetters { source: AmxError },
+    #[snafu(display("an 'a' array argument must be followed by an 'i' or 'A' length"))]
     MissingArrayLength,
-    MissingArg,
-    InvalidArrayLength {
-        source: TryFromIntError,
-    },
-    #[snafu(display("Array length points outside the script's memory"))]
-    ArrayOutOfBounds,
-}
-
-impl From<ArgError> for AmxError {
-    fn from(value: ArgError) -> Self {
-        log::error!("param error: {value:?}");
-        AmxError::Params
-    }
+    #[snafu(display("missing or invalid argument: {source}"))]
+    MissingArg { source: AmxError },
+    #[snafu(display("invalid array length: {source}"))]
+    InvalidArrayLength { source: AmxError },
 }
 
 #[rustfmt::skip]
@@ -73,11 +67,16 @@ impl VariadicAmxArguments {
                 b'a' => PassedArgument::Array({
                     ensure!(matches!(letters.next(), Some(b'i' | b'A')), MissingArrayLength);
                     let buffer: UnsizedBuffer = args.next_arg().context(MissingArg)?;
-                    let length_ref: Ref<i32> = args.next_arg().context(MissingArg)?;
-                    let length = usize::try_from(length_ref.get()).context(InvalidArrayLength)?;
-                    buffer.into_sized_buffer(length).ok().context(ArrayOutOfBounds)?.to_vec()
+                    let length: Ref<usize> = args.next_arg().context(MissingArg)?;
+                    let length = length.get().context(InvalidArrayLength)?;
+                    buffer
+                        .into_sized_buffer(length).context(InvalidArrayLength)?
+                        .to_vec().context(InvalidArrayLength)?
                 }),
-                _ => PassedArgument::PrimitiveCell(args.next_arg::<Ref<i32>>().context(MissingArg)?.get()),
+                _ => PassedArgument::PrimitiveCell(
+                    args.next_arg::<Ref<RawCell>>().context(MissingArg)?
+                        .get().context(MissingArg)?,
+                ),
             });
         }
         Ok(Self {
@@ -93,15 +92,16 @@ impl VariadicAmxArguments {
         let amx = allocator.amx();
         for param in self.inner.iter().rev() {
             match param {
-                PassedArgument::PrimitiveCell(cell_value) => {
-                    amx.push(cell_value)?;
+                PassedArgument::PrimitiveCell(cell) => {
+                    amx.push(cell)?;
                 }
                 PassedArgument::Str(bytes) => {
                     amx.push(allocator.allot_bytes(bytes)?)?;
                 }
-                PassedArgument::Array(array_cells) => {
-                    let amx_buffer = allocator.allot_array(array_cells.as_slice())?;
-                    amx.push(array_cells.len())?;
+                PassedArgument::Array(cells) => {
+                    let length = i32::try_from(cells.len()).map_err(|_| AmxError::Domain)?;
+                    let amx_buffer = allocator.allot_array(cells.as_slice())?;
+                    amx.push(length)?;
                     amx.push(amx_buffer)?;
                 }
             }

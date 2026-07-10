@@ -7,7 +7,6 @@ use std::{
 
 use durr::now;
 use slab::Slab;
-use snafu::{ensure, OptionExt, Snafu};
 
 use crate::timer::Timer;
 
@@ -73,13 +72,6 @@ thread_local! {
     })
 }
 
-#[derive(Debug, Snafu)]
-#[snafu(context(suffix(false)))]
-pub(crate) enum TriggeringError {
-    #[snafu(display("Timer key {key} does not exist"))]
-    TimerNotInQueue { key: usize },
-}
-
 pub(crate) fn insert_and_schedule_timer(
     timer: Timer,
     next_trigger: Instant,
@@ -104,27 +96,23 @@ pub(crate) fn insert_and_schedule_timer(
     })
 }
 
-pub(crate) fn delete_timer(timer_key: usize) -> Result<(), TriggeringError> {
+/// `None` when no timer has the key; the caller owns the user-facing error.
+pub(crate) fn delete_timer(timer_key: usize) -> Option<()> {
     STATE.with_borrow_mut(|State { timers, queue }| {
-        ensure!(
-            timers.try_remove(timer_key).is_some(),
-            TimerNotInQueue { key: timer_key }
-        );
+        timers.try_remove(timer_key)?;
         queue.retain(|s| s.key != timer_key);
-        Ok(())
+        Some(())
     })
 }
 
+/// `None` when no timer has the key; the caller owns the user-facing error.
 pub(crate) fn reschedule_timer(
     key: usize,
     next_trigger: Instant,
     repeat: Option<Duration>,
-) -> Result<(), TriggeringError> {
+) -> Option<()> {
     STATE.with_borrow_mut(|State { queue, .. }| {
-        let current_index = queue
-            .iter()
-            .position(|ts| ts.key == key)
-            .context(TimerNotInQueue { key })?;
+        let current_index = queue.iter().position(|ts| ts.key == key)?;
         // Remove before searching for the new position, so the stale entry
         // can't skew `partition_point` (the queue must stay sorted while
         // it's scanned).
@@ -133,7 +121,7 @@ pub(crate) fn reschedule_timer(
         timer_state.repeat.replace(repeat);
         let new_index = queue.partition_point(|s| s.next_trigger.get() > next_trigger);
         queue.insert(new_index, timer_state);
-        Ok(())
+        Some(())
     })
 }
 
@@ -287,9 +275,9 @@ mod test {
     fn missing_keys_are_errors_not_panics() {
         let start = now();
         let key = insert_and_schedule_timer(timer(), start + 1.seconds(), None);
-        assert!(super::reschedule_timer(key + 1, start, None).is_err());
-        assert!(super::delete_timer(key + 1).is_err());
-        assert!(super::delete_timer(key).is_ok());
-        assert!(super::reschedule_timer(key, start, None).is_err());
+        assert!(super::reschedule_timer(key + 1, start, None).is_none());
+        assert!(super::delete_timer(key + 1).is_none());
+        assert!(super::delete_timer(key).is_some());
+        assert!(super::reschedule_timer(key, start, None).is_none());
     }
 }

@@ -11,7 +11,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-samp = { git = "https://github.com/bmisiak/samp-sdk.git", rev = "6137cc56182cc51782e59977fe4b064836efc8f8" }
+samp = { git = "https://github.com/bmisiak/samp-sdk.git", rev = "739524f00dc78282c8b545ac1f04d6fe79994efb" }
 # samp = { path = "../samp-rs/samp" }
 slab = "0.4.4"
 log = "0.4.6"
