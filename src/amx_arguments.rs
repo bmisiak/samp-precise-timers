@@ -1,6 +1,6 @@
 use samp::{
     amx::Allocator,
-    args::Args,
+    args::VariadicArgs,
     cell::{RawCell, Ref, UnsizedBuffer},
     error::AmxError,
     prelude::AmxString,
@@ -53,9 +53,8 @@ impl VariadicAmxArguments {
     /// It expects `args` to be positioned at a string of type letters,
     /// e.g. `"iiaAs"` ("two integers, an array and its length, and a string"),
     /// which instructs us how to interpret the variadic arguments that follow.
-    pub fn from_amx_args(mut args: Args) -> Result<VariadicAmxArguments, ArgError> {
+    pub fn from_amx_args(mut args: VariadicArgs) -> Result<VariadicAmxArguments, ArgError> {
         let letters = args.next_arg::<AmxString>().context(MissingTypeLetters)?.to_bytes();
-        let mut args = args.into_variadic();
         let (expected, received) = (letters.len(), args.remaining());
         ensure!(expected == received, MismatchedAmountOfArgs { received, expected, letters });
 

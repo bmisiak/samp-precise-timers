@@ -5,6 +5,7 @@ use amx_arguments::{ArgError, VariadicAmxArguments};
 use durr::{now, Durr};
 use log::{error, info};
 use samp::amx::{Amx, AmxExt};
+use samp::args::VariadicArgs;
 use samp::cell::AmxString;
 use samp::error::AmxError;
 use snafu::{OptionExt, ResultExt, Snafu};
@@ -26,12 +27,6 @@ use scheduling::{
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
 enum TimerError {
-    #[snafu(display("SetPreciseTimer expects a callback name as its first argument: {source}"))]
-    MissingCallbackName { source: AmxError },
-    #[snafu(display("SetPreciseTimer expects a non-negative interval in milliseconds as its second argument: {source}"))]
-    MissingInterval { source: AmxError },
-    #[snafu(display("SetPreciseTimer expects a bool:repeat as its third argument: {source}"))]
-    MissingRepeat { source: AmxError },
     #[snafu(display("repeating timers must have an interval of at least 1ms"))]
     ZeroIntervalRepeat,
     #[snafu(display("\"{name}\" is not a public function of the scheduling script: {source}"))]
@@ -59,12 +54,18 @@ fn validated_repeat(repeat: bool, interval: Duration) -> Result<Option<Duration>
 /// ```
 /// native SetPreciseTimer(const callback_name[], const interval, const bool:repeat, const types_of_arguments[]="", {Float,_}:...);
 /// ```
-#[samp::native(raw, name = "SetPreciseTimer")]
-fn create(amx: Amx, mut args: samp::args::Args) -> Result<i32, TimerError> {
-    // Get the basic, mandatory timer parameters
-    let callback_name: AmxString = args.next_arg().context(MissingCallbackName)?;
-    let interval = u64::from(args.next_arg::<u32>().context(MissingInterval)?).milliseconds();
-    let repeat = validated_repeat(args.next_arg().context(MissingRepeat)?, interval)?;
+// Native extractors produce owned parameter values; borrowing this argument
+// would no longer match the `Native` function signature contract.
+#[allow(clippy::needless_pass_by_value)]
+fn create(
+    amx: Amx,
+    callback_name: AmxString,
+    interval: u32,
+    repeat: bool,
+    args: VariadicArgs,
+) -> Result<i32, TimerError> {
+    let interval = u64::from(interval).milliseconds();
+    let repeat = validated_repeat(repeat, interval)?;
     let passed_arguments = VariadicAmxArguments::from_amx_args(args)?;
 
     let timer = Timer {
@@ -90,8 +91,7 @@ fn create(amx: Amx, mut args: samp::args::Args) -> Result<i32, TimerError> {
 ///  ```
 /// native DeletePreciseTimer(timer_number)
 /// ```
-#[samp::native(name = "DeletePreciseTimer")]
-fn delete(_amx: Amx, number: NonZeroUsize) -> Result<i32, TimerError> {
+fn delete(number: NonZeroUsize) -> Result<i32, TimerError> {
     delete_timer(number.get() - 1).context(NoSuchTimer { number })?;
     Ok(1)
 }
@@ -101,8 +101,7 @@ fn delete(_amx: Amx, number: NonZeroUsize) -> Result<i32, TimerError> {
 ///  ```
 /// native ResetPreciseTimer(timer_number, const interval, const bool:repeat)
 /// ```
-#[samp::native(name = "ResetPreciseTimer")]
-fn reset(_amx: Amx, number: NonZeroUsize, interval: u32, repeat: bool) -> Result<i32, TimerError> {
+fn reset(number: NonZeroUsize, interval: u32, repeat: bool) -> Result<i32, TimerError> {
     let interval = u64::from(interval).milliseconds();
     let repeat = validated_repeat(repeat, interval)?;
 
@@ -126,11 +125,15 @@ fn process_tick() {
     }
 }
 
-samp::initialize_plugin!(
-    natives: [create, delete, reset],
+samp::plugin! {
+    natives: [
+        c"SetPreciseTimer" = create,
+        c"DeletePreciseTimer" = delete,
+        c"ResetPreciseTimer" = reset,
+    ],
     on_amx_unload: on_amx_unload,
     process_tick: process_tick,
-    {
+    load: {
         // Panics abort the server (see Cargo.toml); the hook runs first and
         // puts the reason in the server log, which stderr may not reach.
         std::panic::set_hook(Box::new(|panic_info| {
@@ -139,4 +142,4 @@ samp::initialize_plugin!(
 
         info!("samp-precise-timers v3 (c) Brian Misiak loaded correctly.");
     }
-);
+}
