@@ -131,16 +131,6 @@ samp::initialize_plugin!(
     on_amx_unload: on_amx_unload,
     process_tick: process_tick,
     {
-        let samp_logprintf = samp::plugin::logger().level(log::LevelFilter::Info);
-
-        let _ = fern::Dispatch::new()
-            .format(|out, message, record| {
-                let level = record.level();
-                out.finish(format_args!("samp-precise-timers {level}: {message}"));
-            })
-            .chain(samp_logprintf)
-            .apply();
-
         // Panics abort the server (see Cargo.toml); the hook runs first and
         // puts the reason in the server log, which stderr may not reach.
         std::panic::set_hook(Box::new(|panic_info| {

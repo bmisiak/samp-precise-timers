@@ -9,25 +9,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "228047a76f468627ca71776ecdebd732a3423081fcf5125585bcd7c49886ce12"
 
 [[package]]
-name = "cfg-if"
-version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b486ce3ccf7ffd79fdeb678eac06a9e6c09fc88d33836340becb8fffe87c5e33"
-
-[[package]]
 name = "durr"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6150896f7f231d85fb8b13d5ef6974bbfae83cd857a0f5bd5ec5c856da32f5b"
-
-[[package]]
-name = "fern"
-version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9f0c14694cbd524c8720dd69b0e3179344f04ebb5f90f2e4a440c6ea3b2f1ee"
-dependencies = [
- "log",
-]
 
 [[package]]
 name = "heck"
@@ -37,12 +22,9 @@ checksum = "95505c38b4572b2d910cecb0281560f54b440a19336cbbcb27bf6ce6adc6f5a8"
 
 [[package]]
 name = "log"
-version = "0.4.6"
+version = "0.4.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c84ec4b527950aa83a329754b01dbe3f58361d1c5efacd1f6d68c494d08a17c6"
-dependencies = [
- "cfg-if",
-]
+checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "proc-macro2"
@@ -65,9 +47,9 @@ dependencies = [
 [[package]]
 name = "samp"
 version = "0.2.0"
-source = "git+https://github.com/bmisiak/samp-sdk.git?rev=739524f00dc78282c8b545ac1f04d6fe79994efb#739524f00dc78282c8b545ac1f04d6fe79994efb"
+source = "git+https://github.com/bmisiak/samp-sdk.git?rev=7499943383dfa2327bdcc9ac6975aff5c485b854#7499943383dfa2327bdcc9ac6975aff5c485b854"
 dependencies = [
- "fern",
+ "log",
  "samp-codegen",
  "samp-sdk",
 ]
@@ -75,7 +57,7 @@ dependencies = [
 [[package]]
 name = "samp-codegen"
 version = "0.2.0"
-source = "git+https://github.com/bmisiak/samp-sdk.git?rev=739524f00dc78282c8b545ac1f04d6fe79994efb#739524f00dc78282c8b545ac1f04d6fe79994efb"
+source = "git+https://github.com/bmisiak/samp-sdk.git?rev=7499943383dfa2327bdcc9ac6975aff5c485b854#7499943383dfa2327bdcc9ac6975aff5c485b854"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -87,7 +69,6 @@ name = "samp-precise-timers"
 version = "1.0.0"
 dependencies = [
  "durr",
- "fern",
  "log",
  "samp",
  "slab",
@@ -97,7 +78,7 @@ dependencies = [
 [[package]]
 name = "samp-sdk"
 version = "0.10.0"
-source = "git+https://github.com/bmisiak/samp-sdk.git?rev=739524f00dc78282c8b545ac1f04d6fe79994efb#739524f00dc78282c8b545ac1f04d6fe79994efb"
+source = "git+https://github.com/bmisiak/samp-sdk.git?rev=7499943383dfa2327bdcc9ac6975aff5c485b854#7499943383dfa2327bdcc9ac6975aff5c485b854"
 dependencies = [
  "bitflags",
 ]

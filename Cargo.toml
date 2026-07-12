@@ -11,11 +11,10 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-samp = { git = "https://github.com/bmisiak/samp-sdk.git", rev = "739524f00dc78282c8b545ac1f04d6fe79994efb" }
+samp = { git = "https://github.com/bmisiak/samp-sdk.git", rev = "7499943383dfa2327bdcc9ac6975aff5c485b854" }
 # samp = { path = "../samp-rs/samp" }
 slab = "0.4.4"
-log = "0.4.6"
-fern = { version = "0.6", features = [] }
+log = "0.4"
 snafu = "0.8.0"
 durr = "2"
 
