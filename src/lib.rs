@@ -14,6 +14,8 @@ use std::time::Duration;
 use timer::Timer;
 mod amx_arguments;
 mod scheduling;
+#[cfg(test)]
+mod tests;
 mod timer;
 use scheduling::{
     delete_timer, insert_and_schedule_timer, next_due_timer, remove_timers, reschedule_timer,
@@ -121,25 +123,6 @@ fn process_tick() {
         if let Err(exec_err) = due_timer.timer.fire() {
             error!("Error while executing timer: {exec_err}");
         }
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::validated_repeat;
-    use durr::Durr;
-
-    #[test]
-    fn zero_interval_is_only_valid_without_repeat() {
-        assert!(validated_repeat(true, 0.milliseconds()).is_err());
-        assert!(matches!(
-            validated_repeat(false, 0.milliseconds()),
-            Ok(None)
-        ));
-        assert_eq!(
-            validated_repeat(true, 5.milliseconds()).unwrap(),
-            Some(5.milliseconds())
-        );
     }
 }
 

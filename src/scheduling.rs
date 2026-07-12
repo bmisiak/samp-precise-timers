@@ -12,7 +12,7 @@ pub(crate) struct TimerState {
     pub(crate) timer: Timer,
     repeat: Cell<Option<Duration>>,
     next_trigger: Cell<Instant>,
-    key: usize,
+    pub(crate) key: usize,
 }
 
 impl PartialEq for TimerState {
@@ -35,17 +35,17 @@ impl Ord for TimerState {
     }
 }
 
-struct State {
+pub(crate) struct State {
     /// Allocates the stable keys handed to PAWN and tracks which are alive.
     /// Every entry is also in `queue` and vice versa.
-    timers: Slab<Rc<TimerState>>,
+    pub(crate) timers: Slab<Rc<TimerState>>,
     /// Queue of timers sorted by descending `next_trigger`, so the next due
     /// timer is peekable and poppable at the back in O(1) every tick.
-    queue: Vec<Rc<TimerState>>,
+    pub(crate) queue: Vec<Rc<TimerState>>,
 }
 
 thread_local! {
-    static STATE: RefCell<State> = RefCell::new(State {
+    pub(crate) static STATE: RefCell<State> = RefCell::new(State {
         timers: Slab::with_capacity(1024),
         queue: Vec::with_capacity(1024),
     })
@@ -138,123 +138,4 @@ pub(crate) fn next_due_timer(now: Instant) -> Option<Rc<TimerState>> {
             Some(unscheduled)
         }
     })
-}
-
-#[cfg(test)]
-mod test {
-    use durr::{now, Durr};
-
-    use crate::scheduling::{State, STATE};
-    use crate::Timer;
-    use crate::{amx_arguments::VariadicAmxArguments, scheduling::next_due_timer};
-
-    use super::{insert_and_schedule_timer, TimerState};
-
-    fn timer() -> Timer {
-        Timer {
-            passed_arguments: VariadicAmxArguments::empty(),
-            amx_callback_index: samp::consts::AmxExecIdx::Continue,
-            amx: samp::amx::AmxHandle::dangling(),
-        }
-    }
-
-    fn timer_keys(q: impl IntoIterator<Item: AsRef<TimerState>>) -> Vec<usize> {
-        q.into_iter().map(|s| s.as_ref().key).collect()
-    }
-
-    #[test]
-    fn hello() {
-        let start = now();
-        assert!(next_due_timer(start).is_none());
-        let timers = [
-            insert_and_schedule_timer(timer(), start + 1.seconds(), Some(5.seconds())),
-            insert_and_schedule_timer(timer(), start + 2.seconds(), None),
-            insert_and_schedule_timer(timer(), start + 3.seconds(), Some(1.seconds())),
-            insert_and_schedule_timer(timer(), start + 4.seconds(), Some(1.seconds())),
-        ];
-        STATE.with_borrow_mut(|&mut State { ref mut queue, .. }| {
-            assert_eq!(
-                timer_keys(queue),
-                [timers[3], timers[2], timers[1], timers[0]]
-            );
-        });
-        // Timer 0 fires at t=1.2s and is rescheduled to t=6.2s, the latest
-        // trigger in the queue, which puts it at the front (soonest-last).
-        assert!(next_due_timer(start + 1200.milliseconds()).is_some());
-        STATE.with_borrow_mut(|state| {
-            assert_eq!(
-                timer_keys(&state.queue),
-                [timers[0], timers[3], timers[2], timers[1]]
-            )
-        });
-        assert!(next_due_timer(start + 1200.milliseconds()).is_none());
-        // Timer 1 is a one-shot: firing it at t=2.1s removes it entirely.
-        assert!(next_due_timer(start + 2100.milliseconds()).is_some());
-        STATE.with_borrow_mut(|state| {
-            assert_eq!(timer_keys(&state.queue), [timers[0], timers[3], timers[2]])
-        });
-    }
-
-    #[test]
-    fn equal_triggers_fire_in_scheduling_order() {
-        let start = now();
-        let trigger = start + 1.seconds();
-        let timers = [
-            insert_and_schedule_timer(timer(), trigger, None),
-            insert_and_schedule_timer(timer(), trigger, None),
-            insert_and_schedule_timer(timer(), trigger, None),
-        ];
-        for expected_key in timers {
-            let due = next_due_timer(start + 1100.milliseconds()).expect("timer should be due");
-            assert_eq!(due.key, expected_key);
-        }
-    }
-
-    #[test]
-    fn rescheduling_keeps_the_queue_sorted() {
-        let start = now();
-        let timers = [
-            insert_and_schedule_timer(timer(), start + 10.seconds(), None),
-            insert_and_schedule_timer(timer(), start + 8.seconds(), None),
-            insert_and_schedule_timer(timer(), start + 6.seconds(), None),
-            insert_and_schedule_timer(timer(), start + 4.seconds(), None),
-        ];
-
-        // Move timer 1 later (8s -> 5s): between timers 2 (6s) and 3 (4s).
-        super::reschedule_timer(timers[1], start + 5.seconds(), None).unwrap();
-        STATE.with_borrow_mut(|state| {
-            assert_eq!(
-                timer_keys(&state.queue),
-                [timers[0], timers[2], timers[1], timers[3]]
-            );
-        });
-
-        // Move timer 2 earlier (6s -> 9s): between timers 0 (10s) and 1 (5s).
-        super::reschedule_timer(timers[2], start + 9.seconds(), None).unwrap();
-        STATE.with_borrow_mut(|state| {
-            assert_eq!(
-                timer_keys(&state.queue),
-                [timers[0], timers[2], timers[1], timers[3]]
-            );
-        });
-
-        // Reschedule without changing relative order (9s -> 9.5s).
-        super::reschedule_timer(timers[2], start + 9500.milliseconds(), None).unwrap();
-        STATE.with_borrow_mut(|state| {
-            assert_eq!(
-                timer_keys(&state.queue),
-                [timers[0], timers[2], timers[1], timers[3]]
-            );
-        });
-    }
-
-    #[test]
-    fn missing_keys_are_errors_not_panics() {
-        let start = now();
-        let key = insert_and_schedule_timer(timer(), start + 1.seconds(), None);
-        assert!(super::reschedule_timer(key + 1, start, None).is_none());
-        assert!(super::delete_timer(key + 1).is_none());
-        assert!(super::delete_timer(key).is_some());
-        assert!(super::reschedule_timer(key, start, None).is_none());
-    }
 }
