@@ -12,7 +12,7 @@ use snafu::{OptionExt, ResultExt, Snafu};
 
 use std::num::NonZeroUsize;
 use std::time::Duration;
-use timer::Timer;
+use timer::Callback;
 mod amx_arguments;
 mod scheduling;
 #[cfg(test)]
@@ -54,8 +54,6 @@ fn validated_repeat(repeat: bool, interval: Duration) -> Result<Option<Duration>
 /// ```
 /// native SetPreciseTimer(const callback_name[], const interval, const bool:repeat, const types_of_arguments[]="", {Float,_}:...);
 /// ```
-// Native extractors produce owned parameter values; borrowing this argument
-// would no longer match the `Native` function signature contract.
 #[allow(clippy::needless_pass_by_value)]
 fn create(
     amx: Amx,
@@ -68,7 +66,7 @@ fn create(
     let repeat = validated_repeat(repeat, interval)?;
     let passed_arguments = VariadicAmxArguments::from_amx_args(args)?;
 
-    let timer = Timer {
+    let callback = Callback {
         passed_arguments,
         amx: amx.handle(),
         amx_callback_index: amx.find_public(&callback_name.to_cstring()).context(
@@ -77,7 +75,7 @@ fn create(
             },
         )?,
     };
-    let key = insert_and_schedule_timer(timer, now() + interval, repeat);
+    let key = insert_and_schedule_timer(callback, now() + interval, repeat);
     // The timer's slot in Slab<> incresed by 1, so that 0 signifies an invalid timer in PAWN
     let timer_number = key
         .checked_add(1)
@@ -92,7 +90,7 @@ fn create(
 /// native DeletePreciseTimer(timer_number)
 /// ```
 fn delete(number: NonZeroUsize) -> Result<i32, TimerError> {
-    delete_timer(number.get() - 1).context(NoSuchTimer { number })?;
+    delete_timer(number.get() - 1).map_err(|_| TimerError::NoSuchTimer { number })?;
     Ok(1)
 }
 
@@ -105,7 +103,8 @@ fn reset(number: NonZeroUsize, interval: u32, repeat: bool) -> Result<i32, Timer
     let interval = u64::from(interval).milliseconds();
     let repeat = validated_repeat(repeat, interval)?;
 
-    reschedule_timer(number.get() - 1, now() + interval, repeat).context(NoSuchTimer { number })?;
+    reschedule_timer(number.get() - 1, now() + interval, repeat)
+        .map_err(|_| TimerError::NoSuchTimer { number })?;
     Ok(1)
 }
 
@@ -119,7 +118,7 @@ fn process_tick() {
     // `next_due_timer` releases the borrow of the scheduling state before
     // returning, so the callback may freely reenter our natives.
     while let Some(due_timer) = next_due_timer(now) {
-        if let Err(exec_err) = due_timer.timer.fire() {
+        if let Err(exec_err) = due_timer.callback.fire() {
             error!("Error while executing timer: {exec_err}");
         }
     }
@@ -134,8 +133,8 @@ samp::plugin! {
     on_amx_unload: on_amx_unload,
     process_tick: process_tick,
     load: {
-        // Panics abort the server (see Cargo.toml); the hook runs first and
-        // puts the reason in the server log, which stderr may not reach.
+        // Panics abort the server; the hook runs first and
+        // puts the reason in the server log
         std::panic::set_hook(Box::new(|panic_info| {
             error!("fatal: {panic_info}");
         }));

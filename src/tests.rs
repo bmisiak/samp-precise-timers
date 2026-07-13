@@ -2,20 +2,19 @@ use durr::{now, Durr};
 
 use crate::amx_arguments::VariadicAmxArguments;
 use crate::scheduling::{
-    delete_timer, insert_and_schedule_timer, next_due_timer, reschedule_timer, State, TimerState,
-    STATE,
+    delete_timer, insert_and_schedule_timer, next_due_timer, reschedule_timer, State, Timer, STATE,
 };
-use crate::{validated_repeat, Timer};
+use crate::{validated_repeat, Callback};
 
-fn timer() -> Timer {
-    Timer {
+fn timer() -> Callback {
+    Callback {
         passed_arguments: VariadicAmxArguments::empty(),
         amx_callback_index: samp::consts::AmxExecIdx::Continue,
         amx: samp::amx::AmxHandle::dangling(),
     }
 }
 
-fn timer_keys(queue: impl IntoIterator<Item: AsRef<TimerState>>) -> Vec<usize> {
+fn timer_keys(queue: impl IntoIterator<Item: AsRef<Timer>>) -> Vec<usize> {
     queue.into_iter().map(|state| state.as_ref().key).collect()
 }
 
@@ -65,6 +64,27 @@ fn due_timers_are_removed_or_rescheduled() {
     STATE.with_borrow_mut(|state| {
         assert_eq!(timer_keys(&state.queue), [timers[0], timers[3], timers[2]]);
     });
+}
+
+#[test]
+fn repeating_timer_can_remain_at_the_back_after_rescheduling() {
+    let start = now();
+    let repeating = insert_and_schedule_timer(timer(), start + 1.seconds(), Some(1.seconds()));
+    let future = insert_and_schedule_timer(timer(), start + 10.seconds(), None);
+
+    let due = next_due_timer(start + 1100.milliseconds()).expect("timer should be due");
+    assert_eq!(due.key, repeating);
+    STATE.with_borrow(|state| {
+        assert_eq!(timer_keys(&state.queue), [future, repeating]);
+    });
+
+    assert!(next_due_timer(start + 1100.milliseconds()).is_none());
+    assert_eq!(
+        next_due_timer(start + 2200.milliseconds())
+            .expect("repeating timer should become due again")
+            .key,
+        repeating
+    );
 }
 
 #[test]
@@ -121,11 +141,57 @@ fn rescheduling_keeps_the_queue_sorted() {
 }
 
 #[test]
+fn rescheduled_timers_join_the_front_of_an_equal_trigger_group() {
+    let start = now();
+    let shared_trigger = start + 5.seconds();
+    let timers = [
+        insert_and_schedule_timer(timer(), shared_trigger, None),
+        insert_and_schedule_timer(timer(), shared_trigger, None),
+        insert_and_schedule_timer(timer(), start + 1.seconds(), None),
+    ];
+
+    reschedule_timer(timers[2], shared_trigger, None).unwrap();
+    STATE.with_borrow(|state| {
+        assert_eq!(timer_keys(&state.queue), [timers[2], timers[1], timers[0]]);
+    });
+
+    // Resetting an existing member of the group schedules it behind all the
+    // other timers already at that trigger.
+    reschedule_timer(timers[0], shared_trigger, None).unwrap();
+    STATE.with_borrow(|state| {
+        assert_eq!(timer_keys(&state.queue), [timers[0], timers[2], timers[1]]);
+    });
+
+    for expected_key in [timers[1], timers[2], timers[0]] {
+        let due = next_due_timer(shared_trigger).expect("timer should be due");
+        assert_eq!(due.key, expected_key);
+    }
+}
+
+#[test]
+fn deleting_one_of_several_equal_timers_removes_only_that_timer() {
+    let trigger = now() + 1.seconds();
+    let timers = [
+        insert_and_schedule_timer(timer(), trigger, None),
+        insert_and_schedule_timer(timer(), trigger, None),
+        insert_and_schedule_timer(timer(), trigger, None),
+    ];
+
+    delete_timer(timers[1]).unwrap();
+    STATE.with_borrow(|state| {
+        assert_eq!(timer_keys(&state.queue), [timers[2], timers[0]]);
+        assert!(state.timers.contains(timers[0]));
+        assert!(!state.timers.contains(timers[1]));
+        assert!(state.timers.contains(timers[2]));
+    });
+}
+
+#[test]
 fn missing_keys_are_errors_not_panics() {
     let start = now();
     let key = insert_and_schedule_timer(timer(), start + 1.seconds(), None);
-    assert!(reschedule_timer(key + 1, start, None).is_none());
-    assert!(delete_timer(key + 1).is_none());
-    assert!(delete_timer(key).is_some());
-    assert!(reschedule_timer(key, start, None).is_none());
+    assert!(reschedule_timer(key + 1, start, None).is_err());
+    assert!(delete_timer(key + 1).is_err());
+    assert!(delete_timer(key).is_ok());
+    assert!(reschedule_timer(key, start, None).is_err());
 }

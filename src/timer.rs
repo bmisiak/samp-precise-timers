@@ -4,13 +4,13 @@ use samp::{amx::AmxHandle, cell::RawCell, consts::AmxExecIdx, error::AmxError};
 
 /// The Timer struct represents a single scheduled callback
 #[derive(Debug, Clone)]
-pub(crate) struct Timer {
+pub(crate) struct Callback {
     pub passed_arguments: VariadicAmxArguments,
     pub amx: AmxHandle,
     pub amx_callback_index: AmxExecIdx,
 }
 
-impl Timer {
+impl Callback {
     /// Push the timer's arguments onto the AMX stack and execute the
     /// callback. The callback may reenter our natives (e.g.
     /// `DeletePreciseTimer`), so the caller must not hold any borrow of the
