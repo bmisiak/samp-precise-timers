@@ -15,7 +15,7 @@ samp = { git = "https://github.com/bmisiak/samp-sdk.git", rev = "03c93e70b532bd4
 # samp = { path = "../samp-rs/samp" }
 slab = "0.4.4"
 log = "0.4"
-snafu = "0.8.0"
+custom_error = "1.9"
 durr = "2"
 
 [profile.release]

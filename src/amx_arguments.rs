@@ -5,7 +5,6 @@ use samp::{
     error::AmxError,
     prelude::AmxString,
 };
-use snafu::{ensure, ResultExt};
 
 /// These are the types of arguments the plugin supports for passing on to
 /// the callback. Cell values are kept as uninterpreted [`RawCell`]s: we only
@@ -23,24 +22,18 @@ pub(crate) struct VariadicAmxArguments {
     inner: Vec<PassedArgument>,
 }
 
-#[derive(Debug, snafu::Snafu)]
-#[snafu(context(suffix(false)))]
-pub(crate) enum ArgError {
-    #[snafu(display("The list of types ({letters:?}) has {expected} letters, but received {received} arguments."))]
-    MismatchedAmountOfArgs {
-        received: usize,
-        expected: usize,
-        letters: Vec<u8>,
-    },
-    #[snafu(display("missing the types-of-arguments string: {source}"))]
-    MissingTypeLetters { source: AmxError },
-    #[snafu(display("an 'a' array argument must be followed by an 'i' or 'A' length"))]
-    MissingArrayLength,
-    #[snafu(display("missing or invalid argument: {source}"))]
-    MissingArg { source: AmxError },
-    #[snafu(display("invalid array length: {source}"))]
-    InvalidArrayLength { source: AmxError },
+custom_error::custom_error! {
+    pub(crate) ArgError
+    MismatchedAmountOfArgs { received: usize, expected: usize, letters: Vec<u8> } =
+        @{ format!("The list of types ({letters:?}) has {expected} letters, but received {received} arguments.") },
+    MissingTypeLetters { error: AmxError } = "missing the types-of-arguments string: {error}",
+    MissingArrayLength = "an 'a' array argument must be followed by an 'i' or 'A' length",
+    MissingArg { error: AmxError } = "missing or invalid argument: {error}",
+    InvalidArrayLength { error: AmxError } = "invalid array length: {error}",
 }
+use ArgError::{
+    InvalidArrayLength, MismatchedAmountOfArgs, MissingArg, MissingArrayLength, MissingTypeLetters,
+};
 
 #[rustfmt::skip]
 impl VariadicAmxArguments {
@@ -54,27 +47,34 @@ impl VariadicAmxArguments {
     /// e.g. `"iiaAs"` ("two integers, an array and its length, and a string"),
     /// which instructs us how to interpret the variadic arguments that follow.
     pub fn from_amx_args(mut args: VariadicArgs) -> Result<VariadicAmxArguments, ArgError> {
-        let letters = args.next_arg::<AmxString>().context(MissingTypeLetters)?.to_bytes();
+        let letters = args
+            .next_arg::<AmxString>()
+            .map_err(|error| MissingTypeLetters { error })?
+            .to_bytes();
         let (expected, received) = (letters.len(), args.remaining());
-        ensure!(expected == received, MismatchedAmountOfArgs { received, expected, letters });
+        if expected != received {
+            return Err(MismatchedAmountOfArgs { received, expected, letters });
+        }
 
         let mut letters = letters.into_iter();
         let mut collected_arguments: Vec<PassedArgument> = Vec::with_capacity(expected);
         while let Some(type_letter) = letters.next() {
             collected_arguments.push(match type_letter {
-                b's' => PassedArgument::Str(args.next_arg::<AmxString>().context(MissingArg)?.to_bytes()),
+                b's' => PassedArgument::Str(args.next_arg::<AmxString>().map_err(|error| MissingArg { error })?.to_bytes()),
                 b'a' => PassedArgument::Array({
-                    ensure!(matches!(letters.next(), Some(b'i' | b'A')), MissingArrayLength);
-                    let buffer: UnsizedBuffer = args.next_arg().context(MissingArg)?;
-                    let length: Ref<usize> = args.next_arg().context(MissingArg)?;
-                    let length = length.get().context(InvalidArrayLength)?;
+                    if !matches!(letters.next(), Some(b'i' | b'A')) {
+                        return Err(MissingArrayLength);
+                    }
+                    let buffer: UnsizedBuffer = args.next_arg().map_err(|error| MissingArg { error })?;
+                    let length: Ref<usize> = args.next_arg().map_err(|error| MissingArg { error })?;
+                    let length = length.get().map_err(|error| InvalidArrayLength { error })?;
                     buffer
-                        .into_sized_buffer(length).context(InvalidArrayLength)?
-                        .to_vec().context(InvalidArrayLength)?
+                        .into_sized_buffer(length).map_err(|error| InvalidArrayLength { error })?
+                        .to_vec().map_err(|error| InvalidArrayLength { error })?
                 }),
                 _ => PassedArgument::PrimitiveCell(
-                    args.next_arg::<Ref<RawCell>>().context(MissingArg)?
-                        .get().context(MissingArg)?,
+                    args.next_arg::<Ref<RawCell>>().map_err(|error| MissingArg { error })?
+                        .get().map_err(|error| MissingArg { error })?,
                 ),
             });
         }

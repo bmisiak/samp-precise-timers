@@ -8,8 +8,8 @@ use samp::amx::{Amx, AmxExt};
 use samp::args::VariadicArgs;
 use samp::cell::AmxString;
 use samp::error::AmxError;
-use snafu::{OptionExt, ResultExt, Snafu};
 
+use std::ffi::CString;
 use std::num::NonZeroUsize;
 use std::time::Duration;
 use timer::Callback;
@@ -22,28 +22,24 @@ use scheduling::{
     delete_timer, insert_and_schedule_timer, next_due_timer, remove_timers, reschedule_timer,
 };
 
-/// Everything that can go wrong in our natives. The generated wrappers log
-/// the `display` messages in the server log and return 0 to PAWN.
-#[derive(Debug, Snafu)]
-#[snafu(context(suffix(false)))]
-enum TimerError {
-    #[snafu(display("repeating timers must have an interval of at least 1ms"))]
-    ZeroIntervalRepeat,
-    #[snafu(display("\"{name}\" is not a public function of the scheduling script: {source}"))]
-    CallbackNotFound { name: String, source: AmxError },
-    #[snafu(transparent)]
-    InvalidArguments { source: ArgError },
-    #[snafu(display("timer number {number} does not exist"))]
-    NoSuchTimer { number: NonZeroUsize },
-    #[snafu(display("the timer number space is exhausted"))]
-    TooManyTimers,
+custom_error::custom_error! {
+    /// Everything that can go wrong in our natives. The generated wrappers log
+    /// the display messages in the server log and return 0 to PAWN.
+    TimerError
+    ZeroIntervalRepeat = "repeating timers must have an interval of at least 1ms",
+    CallbackNotFound { callback_name: CString, source: AmxError } =
+        @{ format!("{callback_name:?} is not a public function of the scheduling script: {source}") },
+    InvalidArguments { source: ArgError } = "{source}",
+    NoSuchTimer { number: NonZeroUsize } = "timer number {number} does not exist",
+    TooManyTimers = "the timer number space is exhausted",
 }
+use TimerError::{CallbackNotFound, NoSuchTimer, TooManyTimers, ZeroIntervalRepeat};
 
 /// A repeating timer with a 0ms interval would be due again immediately
 /// after firing, making `process_tick`'s drain loop spin forever.
 fn validated_repeat(repeat: bool, interval: Duration) -> Result<Option<Duration>, TimerError> {
     match (repeat, interval) {
-        (true, Duration::ZERO) => ZeroIntervalRepeat.fail(),
+        (true, Duration::ZERO) => Err(ZeroIntervalRepeat),
         (true, interval) => Ok(Some(interval)),
         (false, _) => Ok(None),
     }
@@ -65,22 +61,21 @@ fn create(
     let interval = u64::from(interval).milliseconds();
     let repeat = validated_repeat(repeat, interval)?;
     let passed_arguments = VariadicAmxArguments::from_amx_args(args)?;
+    let callback_name = callback_name.to_cstring();
 
     let callback = Callback {
         passed_arguments,
         amx: amx.handle(),
-        amx_callback_index: amx.find_public(&callback_name.to_cstring()).context(
-            CallbackNotFound {
-                name: callback_name.to_string_lossy(),
-            },
-        )?,
+        amx_callback_index: amx
+            .find_public(&callback_name)
+            .map_err(|source| CallbackNotFound { callback_name, source })?,
     };
     let key = insert_and_schedule_timer(callback, now() + interval, repeat);
     // The timer's slot in Slab<> incresed by 1, so that 0 signifies an invalid timer in PAWN
     let timer_number = key
         .checked_add(1)
         .and_then(|number| i32::try_from(number).ok())
-        .context(TooManyTimers)?;
+        .ok_or(TooManyTimers)?;
     Ok(timer_number)
 }
 
@@ -90,7 +85,7 @@ fn create(
 /// native DeletePreciseTimer(timer_number)
 /// ```
 fn delete(number: NonZeroUsize) -> Result<i32, TimerError> {
-    delete_timer(number.get() - 1).map_err(|_| TimerError::NoSuchTimer { number })?;
+    delete_timer(number.get() - 1).map_err(|_| NoSuchTimer { number })?;
     Ok(1)
 }
 
@@ -104,7 +99,7 @@ fn reset(number: NonZeroUsize, interval: u32, repeat: bool) -> Result<i32, Timer
     let repeat = validated_repeat(repeat, interval)?;
 
     reschedule_timer(number.get() - 1, now() + interval, repeat)
-        .map_err(|_| TimerError::NoSuchTimer { number })?;
+        .map_err(|_| NoSuchTimer { number })?;
     Ok(1)
 }
 
