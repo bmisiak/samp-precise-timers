@@ -24,18 +24,16 @@ pub(crate) struct VariadicAmxArguments {
 
 custom_error::custom_error! {
     pub(crate) ArgError
+    MissingTypeLetters { error: AmxError } = "missing the types-of-arguments string: {error}",
     MismatchedAmountOfArgs { received: usize, expected: usize, letters: Vec<u8> } =
         @{ format!("The list of types ({letters:?}) has {expected} letters, but received {received} arguments.") },
-    MissingTypeLetters { error: AmxError } = "missing the types-of-arguments string: {error}",
-    MissingArrayLength = "an 'a' array argument must be followed by an 'i' or 'A' length",
-    MissingArg { error: AmxError } = "missing or invalid argument: {error}",
-    InvalidArrayLength { error: AmxError } = "invalid array length: {error}",
+    MissingArrayLength { position: usize } =
+        "the 'a' at position {position} must be followed by an 'i' or 'A' holding the array's length",
+    BadArg { letter: char, position: usize, error: AmxError } =
+        "argument of type '{letter}' at position {position}: {error}",
 }
-use ArgError::{
-    InvalidArrayLength, MismatchedAmountOfArgs, MissingArg, MissingArrayLength, MissingTypeLetters,
-};
+use ArgError::{BadArg, MismatchedAmountOfArgs, MissingArrayLength, MissingTypeLetters};
 
-#[rustfmt::skip]
 impl VariadicAmxArguments {
     #[cfg(test)]
     pub fn empty() -> Self {
@@ -56,31 +54,43 @@ impl VariadicAmxArguments {
             return Err(MismatchedAmountOfArgs { received, expected, letters });
         }
 
-        let mut letters = letters.into_iter();
+        let mut letters = letters.into_iter().map(char::from).enumerate();
         let mut collected_arguments: Vec<PassedArgument> = Vec::with_capacity(expected);
-        while let Some(type_letter) = letters.next() {
-            collected_arguments.push(match type_letter {
-                b's' => PassedArgument::Str(args.next_arg::<AmxString>().map_err(|error| MissingArg { error })?.to_bytes()),
-                b'a' => PassedArgument::Array({
-                    if !matches!(letters.next(), Some(b'i' | b'A')) {
-                        return Err(MissingArrayLength);
+        while let Some((position, letter)) = letters.next() {
+            let argument = match letter {
+                's' => Self::next_string(&mut args),
+                'a' => {
+                    if !matches!(letters.next(), Some((_, 'i' | 'A'))) {
+                        return Err(MissingArrayLength { position });
                     }
-                    let buffer: UnsizedBuffer = args.next_arg().map_err(|error| MissingArg { error })?;
-                    let length: Ref<usize> = args.next_arg().map_err(|error| MissingArg { error })?;
-                    let length = length.get().map_err(|error| InvalidArrayLength { error })?;
-                    buffer
-                        .into_sized_buffer(length).map_err(|error| InvalidArrayLength { error })?
-                        .to_vec().map_err(|error| InvalidArrayLength { error })?
-                }),
-                _ => PassedArgument::PrimitiveCell(
-                    args.next_arg::<Ref<RawCell>>().map_err(|error| MissingArg { error })?
-                        .get().map_err(|error| MissingArg { error })?,
-                ),
-            });
+                    Self::next_array(&mut args)
+                }
+                _ => Self::next_cell(&mut args),
+            }
+            .map_err(|error| BadArg { letter, position, error })?;
+            collected_arguments.push(argument);
         }
-        Ok(Self {
-            inner: collected_arguments,
-        })
+        Ok(Self { inner: collected_arguments })
+    }
+
+    fn next_string(args: &mut VariadicArgs) -> Result<PassedArgument, AmxError> {
+        Ok(PassedArgument::Str(
+            args.next_arg::<AmxString>()?.to_bytes(),
+        ))
+    }
+
+    fn next_array(args: &mut VariadicArgs) -> Result<PassedArgument, AmxError> {
+        let buffer: UnsizedBuffer = args.next_arg()?;
+        let length: Ref<usize> = args.next_arg()?;
+        Ok(PassedArgument::Array(
+            buffer.into_sized_buffer(length.get()?)?.to_vec()?,
+        ))
+    }
+
+    fn next_cell(args: &mut VariadicArgs) -> Result<PassedArgument, AmxError> {
+        Ok(PassedArgument::PrimitiveCell(
+            args.next_arg::<Ref<RawCell>>()?.get()?,
+        ))
     }
 
     /// Push the arguments onto the AMX stack, in first-in-last-out order, i.e. reversed.
