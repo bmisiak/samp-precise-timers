@@ -119,9 +119,7 @@ pub(crate) fn remove_timers(predicate: impl Fn(&Callback) -> bool) {
 }
 
 /// Pops (for one-shot timers) or reschedules (for repeating ones) the next
-/// due timer and returns it. Rescheduling happens *before* execution so that
-/// reentrant calls into our natives see consistent state, and the returned
-/// `Rc` keeps the timer's data alive even if the callback deletes the timer.
+/// due timer and returns it.
 #[inline]
 pub(crate) fn next_due_timer(now: Instant) -> Option<Rc<Timer>> {
     STATE.with_borrow_mut(|State { timers, queue }| {

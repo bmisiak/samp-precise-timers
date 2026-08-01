@@ -23,8 +23,6 @@ use scheduling::{
 };
 
 custom_error::custom_error! {
-    /// Everything that can go wrong in our natives. The generated wrappers log
-    /// the display messages in the server log and return 0 to PAWN.
     TimerError
     ZeroIntervalRepeat = "repeating timers must have an interval of at least 1ms",
     CallbackNotFound { callback_name: CString, source: AmxError } =
@@ -38,15 +36,13 @@ use TimerError::{CallbackNotFound, NoSuchTimer, TooManyTimers, ZeroIntervalRepea
 /// A repeating timer with a 0ms interval would be due again immediately
 /// after firing, making `process_tick`'s drain loop spin forever.
 fn validated_repeat(repeat: bool, interval: Duration) -> Result<Option<Duration>, TimerError> {
-    match (repeat, interval) {
-        (true, Duration::ZERO) => Err(ZeroIntervalRepeat),
-        (true, interval) => Ok(Some(interval)),
-        (false, _) => Ok(None),
+    if repeat && interval.is_zero() {
+        return Err(ZeroIntervalRepeat);
     }
+    Ok(repeat.then_some(interval))
 }
 
-/// This function is called from PAWN via the C foreign function interface.
-/// It returns the timer identifier or 0 in case of failure.
+/// Called from PAWN. Returns the timer identifier or 0 in case of failure.
 /// ```
 /// native SetPreciseTimer(const callback_name[], const interval, const bool:repeat, const types_of_arguments[]="", {Float,_}:...);
 /// ```
@@ -58,10 +54,10 @@ fn create(
     repeat: bool,
     args: VariadicArgs,
 ) -> Result<i32, TimerError> {
+    let callback_name = callback_name.to_cstring();
     let interval = u64::from(interval).milliseconds();
     let repeat = validated_repeat(repeat, interval)?;
     let passed_arguments = VariadicAmxArguments::from_amx_args(args)?;
-    let callback_name = callback_name.to_cstring();
 
     let callback = Callback {
         passed_arguments,
@@ -79,8 +75,7 @@ fn create(
     Ok(timer_number)
 }
 
-/// This function is called from PAWN via the C foreign function interface.
-/// Returns 0 if the timer does not exist.
+/// Called from PAWN. Returns 0 if the timer does not exist, 1 if removed.
 ///  ```
 /// native DeletePreciseTimer(timer_number)
 /// ```
@@ -89,8 +84,8 @@ fn delete(number: NonZeroUsize) -> Result<i32, TimerError> {
     Ok(1)
 }
 
-/// This function is called from PAWN via the C foreign function interface.
-/// Returns 0 if the timer does not exist, 1 if removed.
+/// This function is called from PAWN.
+/// Returns 0 if the timer does not exist, 1 if rescheduled.
 ///  ```
 /// native ResetPreciseTimer(timer_number, const interval, const bool:repeat)
 /// ```
@@ -107,11 +102,13 @@ fn on_amx_unload(unloaded_amx: Amx) {
     remove_timers(|timer| timer.amx == unloaded_amx.handle());
 }
 
+#[inline]
 fn process_tick() {
     let now = now();
 
-    // `next_due_timer` releases the borrow of the scheduling state before
-    // returning, so the callback may freely reenter our natives.
+    // `next_due_timer` releases the borrow of the scheduling state, so
+    // in case of reentrancy timer -> callback -> PAWN -> Reset/DeletePreciseTimer
+    // we're all good here.
     while let Some(due_timer) = next_due_timer(now) {
         if let Err(exec_err) = due_timer.callback.fire() {
             error!("Error while executing timer: {exec_err}");
@@ -128,12 +125,11 @@ samp::plugin! {
     on_amx_unload: on_amx_unload,
     process_tick: process_tick,
     load: {
-        // Panics abort the server; the hook runs first and
-        // puts the reason in the server log
         std::panic::set_hook(Box::new(|panic_info| {
+            // making sure errors land in server_log.txt
             error!("fatal: {panic_info}");
         }));
 
-        info!("samp-precise-timers v3 (c) Brian Misiak loaded correctly.");
+        info!("samp-precise-timers v4 (c) Brian Misiak loaded correctly.");
     }
 }

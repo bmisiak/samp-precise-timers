@@ -27,8 +27,7 @@ custom_error::custom_error! {
     MissingTypeLetters { error: AmxError } = "missing the types-of-arguments string: {error}",
     MismatchedAmountOfArgs { received: usize, expected: usize, letters: Vec<u8> } =
         @{ format!("The list of types ({letters:?}) has {expected} letters, but received {received} arguments.") },
-    MissingArrayLength { position: usize } =
-        "the 'a' at position {position} must be followed by an 'i' or 'A' holding the array's length",
+    MissingArrayLength = "the 'a' must be followed by an 'i' or 'A' holding the array's length",
     BadArg { letter: char, position: usize, error: AmxError } =
         "argument of type '{letter}' at position {position}: {error}",
 }
@@ -61,7 +60,7 @@ impl VariadicAmxArguments {
                 's' => Self::next_string(&mut args),
                 'a' => {
                     if !matches!(letters.next(), Some((_, 'i' | 'A'))) {
-                        return Err(MissingArrayLength { position });
+                        return Err(MissingArrayLength);
                     }
                     Self::next_array(&mut args)
                 }
